@@ -1,19 +1,8 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright © 2026 Robin Hasenbach. All Rights Reserved.
 
 #include "ArchipelagoUE.h"
 
 #define LOCTEXT_NAMESPACE "FArchipelagoUEModule"
-
-void FArchipelagoUEModule::StartupModule()
-{
-	// This code will execute after your module is loaded into memory; the exact timing is specified in the .uplugin file per-module
-}
-
-void FArchipelagoUEModule::ShutdownModule()
-{
-	// This function may be called during shutdown to clean up your module.  For modules that support dynamic reloading,
-	// we call this function before unloading the module.
-}
 
 #undef LOCTEXT_NAMESPACE
 	
