@@ -23,10 +23,6 @@
 	],
 	"Plugins": [
 		{
-			"Name": "UnrealYAML",
-			"Enabled": true
-		},
-		{
 			"Name": "WebSocketsSubsystem",
 			"Enabled": true
 		}

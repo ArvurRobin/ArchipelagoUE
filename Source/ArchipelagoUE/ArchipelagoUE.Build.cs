@@ -12,8 +12,9 @@ public class ArchipelagoUE : ModuleRules
 			new string[]
 			{
 				"Core",
-				"UnrealYAML",
-				"WebSocketsSubsystem"
+				"WebSocketsSubsystem",
+                "Json",
+				"JsonUtilities"
 				// ... add other public dependencies that you statically link with here ...
 			}
 			);
