@@ -14,6 +14,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAPConnectionStarted);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAPConnected);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAPConnectionClosed,int32, StatusCode, const FString&, Reason);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPConnectionError, const FString&, Error);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPPrintJSON, const FAPPrintJSONMessage&, Message);
 
 UCLASS()
 class ARCHIPELAGOUE_API UArchipelagoSubsystem : public UGameInstanceSubsystem
@@ -38,6 +39,9 @@ public:
 
     UPROPERTY(BlueprintAssignable, Category = "Archipelago|Events")
     FOnAPConnectionError OnConnectionError;
+
+    UPROPERTY(BlueprintAssignable, Category = "Archipelago|Events")
+    FOnAPPrintJSON OnPrintJSON;
 
 #pragma region Config
 
@@ -114,10 +118,54 @@ private:
 
 public:
 
-    UFUNCTION(BlueprintPure, Category = "Archipelago|Room")
+    UFUNCTION(BlueprintPure, Category = "Archipelago")
     FAPRoomInfo GetRoomInfo() const;
 
+    UFUNCTION(BlueprintCallable, Category = "Archipelago")
+    void SetupArchipelago(const FString& gameName, const FAPMessageTypeColorPalette& colorPalette);
+
+    UFUNCTION(BlueprintPure, Category = "Archipelago")
+    FLinearColor GetPrintJSONColor(const FString& Type) const;
+
 private:
+
+    UPROPERTY()
+    FString GameName;
+
+    UPROPERTY()
+    FString UUID;
+
+    UPROPERTY()
+    FAPMessageTypeColorPalette ColorPalette;
+
+    UPROPERTY()
+    int32 ConnectedTeam = INDEX_NONE;
+
+    UPROPERTY()
+    int32 ConnectedSlot = INDEX_NONE;
+
+    UPROPERTY()
+    TArray<FAPPlayer> Players;
+
+    UPROPERTY()
+    TArray<int64> MissingLocations;
+
+    UPROPERTY()
+    TArray<int64> CheckedLocations;
+
+    UPROPERTY()
+    int32 HintPoints = 0;
+
+    UPROPERTY()
+    TMap<int32, FAPSlotInfo> SlotInfo;
+
+    UPROPERTY()
+    TArray<FAPNetworkItem> ReceivedItems;
+
+    UPROPERTY()
+    int32 ReceivedItemsIndex = 0;
+
+    TSharedPtr<FJsonObject> SlotData;
 
     FAPRoomInfo RoomInfo;
 
@@ -133,8 +181,13 @@ private:
     void HandleConnected(const TSharedPtr<FJsonObject>& JsonObject);
     void HandleConnectionRefused(const TSharedPtr<FJsonObject>& JsonObject);
     void HandleReceivedItems(const TSharedPtr<FJsonObject>& JsonObject);
+    void HandlePrintJSON(const TSharedPtr<FJsonObject>& JsonObject);
 
+    // Parser for Version JSON
     void ParseVersion(const TSharedPtr<FJsonObject>& JsonObject, FAPVersion& OutVersion);
+
+    // Sends Connect Packet through the WebSocket to the Archipelago Server
+    void SendConnectPacket();
 
 #pragma endregion
 

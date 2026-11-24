@@ -153,4 +153,112 @@ struct FAPRoomInfo
     double Time = 0.0;
 };
 
+USTRUCT(BlueprintType)
+struct FAPPlayer
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago")
+    int32 Team = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago")
+    int32 Slot = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago")
+    FString Alias;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago")
+    FString Name;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago")
+    FString PlayerClass;
+};
+
+USTRUCT(BlueprintType)
+struct FAPSlotInfo
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago")
+    FString Name;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago")
+    FString Game;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago")
+    int32 Type = 0;
+};
+
+USTRUCT(BlueprintType)
+struct FAPNetworkItem
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago")
+    int64 Item = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago")
+    int64 Location = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago")
+    int32 Player = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago")
+    int32 Flags = 0;
+};
+
+USTRUCT(BlueprintType)
+struct FAPPrintJSONSegment
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Messages")
+    FString Text;
+
+    // Original type supplied by Archipelago.
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Messages")
+    FString Type;
+
+    // Color selected by our client for display.
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Messages")
+    FLinearColor Color = FLinearColor::White;
+};
+
+USTRUCT(BlueprintType)
+struct FAPPrintJSONMessage
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Messages")
+    TArray<FAPPrintJSONSegment> Segments;
+
+    // Convenience field for logging or simple text displays.
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Messages")
+    FString PlainText;
+};
+
+USTRUCT(BlueprintType)
+struct FAPMessageTypeColorPalette
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Archipelago|Messages|Colors")
+    FLinearColor TextColor = FLinearColor::White;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Archipelago|Messages|Colors")
+    FLinearColor PlayerColor = FLinearColor(0.35f, 0.75f, 1.0f);
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Archipelago|Messages|Colors")
+    FLinearColor ItemColor = FLinearColor(1.0f, 0.75f, 0.2f);
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Archipelago|Messages|Colors")
+    FLinearColor LocationColor = FLinearColor(0.35f, 0.9f, 0.45f);
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Archipelago|Messages|Colors")
+    FLinearColor EntranceColor = FLinearColor(0.75f, 0.5f, 1.0f);
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Archipelago|Messages|Colors")
+    FLinearColor HintColor = FLinearColor(1.0f, 0.6f, 0.2f);
+};
+
 #pragma endregion

@@ -426,8 +426,6 @@ void UArchipelagoSubsystem::HandleWebSocketConnected()
 {
     // WebSocket successfully connected
     UE_LOG(LogArchipelago, Log, TEXT("WebSocket connected!"));
-
-    OnConnected.Broadcast();
 }
 
 void UArchipelagoSubsystem::HandleWebSocketConnectionError(const FString& Error)
@@ -468,6 +466,43 @@ void UArchipelagoSubsystem::HandleWebSocketMessageSent(const FString& Message)
 FAPRoomInfo UArchipelagoSubsystem::GetRoomInfo() const
 {
     return RoomInfo;
+}
+
+void UArchipelagoSubsystem::SetupArchipelago(const FString& gameName, const FAPMessageTypeColorPalette& colorPalette)
+{
+    UUID = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
+    GameName = gameName;
+    ColorPalette = colorPalette;
+}
+
+FLinearColor UArchipelagoSubsystem::GetPrintJSONColor(const FString& Type) const
+{
+    if (Type == TEXT("player_id") || Type == TEXT("player_name"))
+    {
+        return ColorPalette.PlayerColor;
+    }
+
+    if (Type == TEXT("item_id") || Type == TEXT("item_name"))
+    {
+        return ColorPalette.ItemColor;
+    }
+
+    if (Type == TEXT("location_id") || Type == TEXT("location_name"))
+    {
+        return ColorPalette.LocationColor;
+    }
+
+    if (Type == TEXT("entrance_name"))
+    {
+        return ColorPalette.EntranceColor;
+    }
+
+    if (Type == TEXT("hint"))
+    {
+        return ColorPalette.HintColor;
+    }
+
+    return ColorPalette.TextColor;
 }
 
 void UArchipelagoSubsystem::ProcessIncomingMessage(const FString& Message)
@@ -527,6 +562,10 @@ void UArchipelagoSubsystem::ProcessIncomingMessage(const FString& Message)
         {
             HandleReceivedItems(JsonObject);
         }
+        else if (Command == TEXT("PrintJSON"))
+        {
+            HandlePrintJSON(JsonObject);
+        }
         else
         {
             UE_LOG(LogArchipelago, Verbose, TEXT("Unhandled Archipelago command: %s"), *Command);
@@ -534,8 +573,7 @@ void UArchipelagoSubsystem::ProcessIncomingMessage(const FString& Message)
     }
 }
 
-void UArchipelagoSubsystem::HandleRoomInfo(
-    const TSharedPtr<FJsonObject>& JsonObject)
+void UArchipelagoSubsystem::HandleRoomInfo(const TSharedPtr<FJsonObject>& JsonObject)
 {
     if (!JsonObject.IsValid())
     {
@@ -641,25 +679,95 @@ void UArchipelagoSubsystem::HandleRoomInfo(
         {
             if (Pair.Value.IsValid())
             {
-                RoomInfo.DataPackageChecksums.Add(
-                    Pair.Key,
-                    Pair.Value->AsString());
+                RoomInfo.DataPackageChecksums.Add(Pair.Key, Pair.Value->AsString());
             }
         }
     }
 
-    UE_LOG(
-        LogArchipelago,
-        Log,
-        TEXT("RoomInfo processed successfully. Games: %d | Tags: %d | Seed: %s"),
-        RoomInfo.Games.Num(),
-        RoomInfo.Tags.Num(),
-        *RoomInfo.SeedName);
+    UE_LOG(LogArchipelago,Log,TEXT("RoomInfo processed successfully. Games: %d | Tags: %d | Seed: %s"), RoomInfo.Games.Num(), RoomInfo.Tags.Num(), *RoomInfo.SeedName);
+
+    // Send Archipelago authentication
+    SendConnectPacket();
 }
 
 void UArchipelagoSubsystem::HandleConnected(const TSharedPtr<FJsonObject>& JsonObject)
 {
-    UE_LOG(LogArchipelago, Log, TEXT("Processing Connected."));
+    if (!JsonObject.IsValid())
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Invalid Connected JSON object."));
+        return;
+    }
+
+    UE_LOG(LogArchipelago, Log, TEXT("Processing Connected..."));
+
+    JsonObject->TryGetNumberField(TEXT("team"), ConnectedTeam);
+    JsonObject->TryGetNumberField(TEXT("slot"), ConnectedSlot);
+    JsonObject->TryGetNumberField(TEXT("hint_points"), HintPoints);
+
+    // Missing locations
+    MissingLocations.Empty();
+
+    const TArray<TSharedPtr<FJsonValue>>* MissingArray = nullptr;
+
+    if (JsonObject->TryGetArrayField(TEXT("missing_locations"), MissingArray))
+    {
+        for (const TSharedPtr<FJsonValue>& Value : *MissingArray)
+        {
+            MissingLocations.Add(static_cast<int64>(Value->AsNumber()));
+        }
+    }
+
+    // Checked locations
+    CheckedLocations.Empty();
+
+    const TArray<TSharedPtr<FJsonValue>>* CheckedArray = nullptr;
+
+    if (JsonObject->TryGetArrayField(TEXT("checked_locations"), CheckedArray))
+    {
+        for (const TSharedPtr<FJsonValue>& Value : *CheckedArray)
+        {
+            CheckedLocations.Add(static_cast<int64>(Value->AsNumber()));
+        }
+    }
+
+    // Players
+    Players.Empty();
+
+    const TArray<TSharedPtr<FJsonValue>>* PlayersArray = nullptr;
+
+    if (JsonObject->TryGetArrayField(TEXT("players"), PlayersArray))
+    {
+        for (const TSharedPtr<FJsonValue>& Value : *PlayersArray)
+        {
+            const TSharedPtr<FJsonObject> PlayerObject = Value->AsObject();
+
+            if (!PlayerObject.IsValid())
+            {
+                continue;
+            }
+
+            FAPPlayer Player;
+
+            PlayerObject->TryGetNumberField(TEXT("team"), Player.Team);
+            PlayerObject->TryGetNumberField(TEXT("slot"), Player.Slot);
+            PlayerObject->TryGetStringField(TEXT("alias"), Player.Alias);
+            PlayerObject->TryGetStringField(TEXT("name"), Player.Name);
+            PlayerObject->TryGetStringField(TEXT("class"), Player.PlayerClass);
+
+            Players.Add(MoveTemp(Player));
+        }
+    }
+
+    // Slot Data
+    const TSharedPtr<FJsonObject>* SlotDataObject = nullptr;
+
+    if (JsonObject->TryGetObjectField(TEXT("slot_data"), SlotDataObject))
+    {
+        SlotData = *SlotDataObject;
+    }
+
+    UE_LOG(LogArchipelago, Log, TEXT("Connected successfully! Team: %d | Slot: %d | Players: %d"), ConnectedTeam, ConnectedSlot, Players.Num());
+    OnConnected.Broadcast();
 }
 
 void UArchipelagoSubsystem::HandleConnectionRefused(const TSharedPtr<FJsonObject>& JsonObject)
@@ -667,14 +775,125 @@ void UArchipelagoSubsystem::HandleConnectionRefused(const TSharedPtr<FJsonObject
     UE_LOG(LogArchipelago, Warning, TEXT("Processing ConnectionRefused."));
 }
 
-void UArchipelagoSubsystem::HandleReceivedItems(const TSharedPtr<FJsonObject>& JsonObject)
+void UArchipelagoSubsystem::HandleReceivedItems(
+    const TSharedPtr<FJsonObject>& JsonObject)
 {
-    UE_LOG(LogArchipelago, Log, TEXT("Processing ReceivedItems."));
+    if (!JsonObject.IsValid())
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Invalid ReceivedItems JSON object."));
+        return;
+    }
+
+    int32 Index = 0;
+    JsonObject->TryGetNumberField(TEXT("index"), Index);
+
+    const TArray<TSharedPtr<FJsonValue>>* ItemsArray = nullptr;
+
+    if (!JsonObject->TryGetArrayField(TEXT("items"), ItemsArray))
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("ReceivedItems has no items array."));
+        return;
+    }
+
+    // Index 0 means this is the initial item history.
+    // Subsequent messages contain new items starting at their supplied index.
+    if (Index == 0)
+    {
+        ReceivedItems.Empty();
+    }
+
+    for (const TSharedPtr<FJsonValue>& Value : *ItemsArray)
+    {
+        const TSharedPtr<FJsonObject> ItemObject = Value->AsObject();
+
+        if (!ItemObject.IsValid())
+        {
+            continue;
+        }
+
+        FAPNetworkItem Item;
+
+        ItemObject->TryGetNumberField(TEXT("item"), Item.Item);
+        ItemObject->TryGetNumberField(TEXT("location"), Item.Location);
+        ItemObject->TryGetNumberField(TEXT("player"), Item.Player);
+        ItemObject->TryGetNumberField(TEXT("flags"), Item.Flags);
+
+        ReceivedItems.Add(MoveTemp(Item));
+    }
+
+    ReceivedItemsIndex = ReceivedItems.Num();
+
+    UE_LOG(
+        LogArchipelago,
+        Log,
+        TEXT("Received %d items. Total item history: %d"),
+        ItemsArray->Num(),
+        ReceivedItems.Num()
+    );
 }
 
-void UArchipelagoSubsystem::ParseVersion(
-    const TSharedPtr<FJsonObject>& JsonObject,
-    FAPVersion& OutVersion)
+void UArchipelagoSubsystem::HandlePrintJSON(const TSharedPtr<FJsonObject>& JsonObject)
+{
+    if (!JsonObject.IsValid())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("PrintJSON received an invalid JSON object."));
+        return;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* DataArray = nullptr;
+
+    if (!JsonObject->TryGetArrayField(TEXT("data"), DataArray) || !DataArray)
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("PrintJSON is missing its data array."));
+        return;
+    }
+
+    FAPPrintJSONMessage Message;
+
+    for (const TSharedPtr<FJsonValue>& Value : *DataArray)
+    {
+        if (!Value.IsValid() || Value->Type != EJson::Object)
+        {
+            continue;
+        }
+
+        const TSharedPtr<FJsonObject> DataObject = Value->AsObject();
+
+        if (!DataObject.IsValid())
+        {
+            continue;
+        }
+
+        FAPPrintJSONSegment Segment;
+
+        // Read the segment type.
+        if (!DataObject->TryGetStringField(TEXT("type"), Segment.Type))
+        {
+            Segment.Type = TEXT("text");
+        }
+
+        // Read the actual text.
+        if (!DataObject->TryGetStringField(TEXT("text"), Segment.Text))
+        {
+            continue;
+        }
+
+        Segment.Color = GetPrintJSONColor(Segment.Type);
+
+        Message.PlainText += Segment.Text;
+        Message.Segments.Add(Segment);
+    }
+
+    if (Message.Segments.IsEmpty())
+    {
+        return;
+    }
+
+    UE_LOG(LogArchipelago, Log, TEXT("Archipelago: %s"), *Message.PlainText);
+    OnPrintJSON.Broadcast(Message);
+}
+
+void UArchipelagoSubsystem::ParseVersion(const TSharedPtr<FJsonObject>& JsonObject, FAPVersion& OutVersion)
 {
     if (!JsonObject.IsValid())
     {
@@ -693,4 +912,73 @@ void UArchipelagoSubsystem::ParseVersion(
     OutVersion.Major = Major;
     OutVersion.Minor = Minor;
     OutVersion.Build = Build;
+}
+
+void UArchipelagoSubsystem::SendConnectPacket()
+{
+    if (!IsValid(ArchipelagoWebSocket))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Cannot send Connect packet: WebSocket is invalid."));
+        return;
+    }
+
+    // Create Connect object
+    TSharedPtr<FJsonObject> ConnectObject = MakeShared<FJsonObject>();
+
+    ConnectObject->SetStringField(TEXT("cmd"), TEXT("Connect"));
+
+    // Password
+    if (Config.Password.IsEmpty())
+    {
+        ConnectObject->SetField(TEXT("password"), MakeShared<FJsonValueNull>());
+    }
+    else
+    {
+        ConnectObject->SetStringField(TEXT("password"), Config.Password);
+    }
+
+    // Player information
+    ConnectObject->SetStringField(TEXT("game"), GameName);
+    ConnectObject->SetStringField(TEXT("name"), Config.Slot);
+    ConnectObject->SetStringField(TEXT("uuid"), UUID);
+
+    // Client protocol version
+    TSharedPtr<FJsonObject> VersionObject = MakeShared<FJsonObject>();
+
+    VersionObject->SetNumberField(TEXT("major"), 0);
+    VersionObject->SetNumberField(TEXT("minor"), 6);
+    VersionObject->SetNumberField(TEXT("build"), 8);
+    VersionObject->SetStringField(TEXT("class"), TEXT("Version"));
+
+    ConnectObject->SetObjectField(TEXT("version"), VersionObject);
+
+    // Item handling
+    ConnectObject->SetNumberField(TEXT("items_handling"), 7);
+
+    // Tags
+    TArray<TSharedPtr<FJsonValue>> Tags;
+    ConnectObject->SetArrayField(TEXT("tags"), Tags);
+
+    // Request slot data
+    ConnectObject->SetBoolField(TEXT("slot_data"), true);
+
+    // Archipelago expects an array of commands.
+    TArray<TSharedPtr<FJsonValue>> RootArray;
+    RootArray.Add(MakeShared<FJsonValueObject>(ConnectObject));
+
+    // Serialize JSON
+    FString SerializedMessage;
+
+    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&SerializedMessage);
+
+    if (!FJsonSerializer::Serialize(RootArray, Writer))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to serialize Connect packet."));
+        return;
+    }
+
+    // Send message
+    ArchipelagoWebSocket->SendMessage(SerializedMessage);
+
+    UE_LOG(LogArchipelago, Log, TEXT("Archipelago Connect packet sent."));
 }
