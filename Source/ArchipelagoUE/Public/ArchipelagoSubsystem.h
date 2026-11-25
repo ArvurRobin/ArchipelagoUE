@@ -15,6 +15,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAPConnected);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAPConnectionClosed,int32, StatusCode, const FString&, Reason);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPConnectionError, const FString&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPPrintJSON, const FAPPrintJSONMessage&, Message);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPReceivedItems, const TArray<FAPResolvedNetworkItem>&, ReceivedItems);
 
 UCLASS()
 class ARCHIPELAGOUE_API UArchipelagoSubsystem : public UGameInstanceSubsystem
@@ -42,6 +43,9 @@ public:
 
     UPROPERTY(BlueprintAssignable, Category = "Archipelago|Events")
     FOnAPPrintJSON OnPrintJSON;
+
+    UPROPERTY(BlueprintAssignable, Category = "Archipelago|Events")
+    FOnAPReceivedItems OnReceivedItems;
 
 #pragma region Config
 
@@ -121,11 +125,20 @@ public:
     UFUNCTION(BlueprintPure, Category = "Archipelago")
     FAPRoomInfo GetRoomInfo() const;
 
+    UFUNCTION(BlueprintPure, Category = "Archipelago")
+    TArray<FAPNetworkItem> GetReceivedItems() const;
+
     UFUNCTION(BlueprintCallable, Category = "Archipelago")
     void SetupArchipelago(const FString& gameName, const FAPMessageTypeColorPalette& colorPalette);
 
     UFUNCTION(BlueprintPure, Category = "Archipelago")
     FLinearColor GetPrintJSONColor(const FString& Type) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Archipelago")
+    bool SendLocationCheck(int64 LocationId);
+
+    UFUNCTION(BlueprintCallable, Category = "Archipelago")
+    bool SendLocationChecks(const TArray<int64>& LocationIds);
 
 private:
 
@@ -151,7 +164,7 @@ private:
     TArray<int64> MissingLocations;
 
     UPROPERTY()
-    TArray<int64> CheckedLocations;
+    TSet<int64> CheckedLocations;
 
     UPROPERTY()
     int32 HintPoints = 0;
@@ -163,11 +176,16 @@ private:
     TArray<FAPNetworkItem> ReceivedItems;
 
     UPROPERTY()
+    TArray<FAPResolvedNetworkItem> ReceivedItemsResolved;
+
+    UPROPERTY()
     int32 ReceivedItemsIndex = 0;
 
     TSharedPtr<FJsonObject> SlotData;
 
     FAPRoomInfo RoomInfo;
+
+    TMap<FString, FAPGameData> GameData;
 
     /**
      * Processes incoming Archipelago server messages.
@@ -182,12 +200,22 @@ private:
     void HandleConnectionRefused(const TSharedPtr<FJsonObject>& JsonObject);
     void HandleReceivedItems(const TSharedPtr<FJsonObject>& JsonObject);
     void HandlePrintJSON(const TSharedPtr<FJsonObject>& JsonObject);
+    void HandleDataPackage(const TSharedPtr<FJsonObject>& JsonObject);
 
     // Parser for Version JSON
     void ParseVersion(const TSharedPtr<FJsonObject>& JsonObject, FAPVersion& OutVersion);
 
+    // Parser for PrintJSON Segments
+    FAPPrintJSONSegment ParsePrintJSONSegment(const FAPPrintJSONSegment Segment, int32 PlayerID);
+
     // Sends Connect Packet through the WebSocket to the Archipelago Server
     void SendConnectPacket();
+
+    void RequestDataPackage(const TArray<FString>& GameNames);
+    void RequestSync();
+
+    UFUNCTION(BlueprintPure, Category = "Archipelago|Items")
+    FAPResolvedNetworkItem ResolveNetworkItem(const FAPNetworkItem& NetworkItem) const;
 
 #pragma endregion
 

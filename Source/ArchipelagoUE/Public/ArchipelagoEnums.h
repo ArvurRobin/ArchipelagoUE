@@ -97,4 +97,13 @@ enum class EAPPermission : uint8
     All = 7                 UMETA(DisplayName = "All")
 };
 
+UENUM(BlueprintType)
+enum class EAPItemClassification : uint8
+{
+    Advancement             UMETA(DisplayName = "Advancement"),
+    NeverExclude            UMETA(DisplayName = "Never Exclude"),
+    Useful                  UMETA(DisplayName = "Useful"),
+    Trap                    UMETA(DisplayName = "Trap")
+};
+
 #pragma endregion

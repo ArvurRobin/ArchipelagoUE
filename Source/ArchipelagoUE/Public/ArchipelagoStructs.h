@@ -208,6 +208,58 @@ struct FAPNetworkItem
 };
 
 USTRUCT(BlueprintType)
+struct FAPResolvedNetworkItem
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Items")
+    FString ItemName;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Items")
+    FString LocationName;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Items")
+    FString PlayerName;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Items")
+    int64 ItemID = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Items")
+    int64 LocationID = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Items")
+    int32 PlayerSlot = 0;
+
+    // Can contain multiple classifications.
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Items")
+    TSet<EAPItemClassification> Classifications;
+
+    // Indicates whether the IDs could be resolved into names.
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Items")
+    bool bItemNameFound = false;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Items")
+    bool bLocationNameFound = false;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Items")
+    bool bPlayerNameFound = false;
+};
+
+USTRUCT(BlueprintType)
+struct FAPGameData
+{
+    GENERATED_BODY()
+
+    // Item ID -> Item Name
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Game Data")
+    TMap<int64, FString> ItemNames;
+
+    // Location ID -> Location Name
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Game Data")
+    TMap<int64, FString> LocationNames;
+};
+
+USTRUCT(BlueprintType)
 struct FAPPrintJSONSegment
 {
     GENERATED_BODY()

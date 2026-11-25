@@ -460,12 +460,17 @@ void UArchipelagoSubsystem::HandleWebSocketMessageReceived(const FString& Messag
 void UArchipelagoSubsystem::HandleWebSocketMessageSent(const FString& Message)
 {
     // Handle outgoing message
-    UE_LOG(LogArchipelago, Log, TEXT("Message Sent:\n%s"), *Message);
+    //UE_LOG(LogArchipelago, Log, TEXT("Message Sent:\n%s"), *Message);
 }
 
 FAPRoomInfo UArchipelagoSubsystem::GetRoomInfo() const
 {
     return RoomInfo;
+}
+
+TArray<FAPNetworkItem> UArchipelagoSubsystem::GetReceivedItems() const
+{
+    return ReceivedItems;
 }
 
 void UArchipelagoSubsystem::SetupArchipelago(const FString& gameName, const FAPMessageTypeColorPalette& colorPalette)
@@ -503,6 +508,55 @@ FLinearColor UArchipelagoSubsystem::GetPrintJSONColor(const FString& Type) const
     }
 
     return ColorPalette.TextColor;
+}
+
+bool UArchipelagoSubsystem::SendLocationCheck(int64 LocationId)
+{
+    return SendLocationChecks({ LocationId });
+}
+
+bool UArchipelagoSubsystem::SendLocationChecks(const TArray<int64>& LocationIds)
+{
+    if (!ArchipelagoWebSocket->IsConnected())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Cannot send LocationChecks: WebSocket is not connected."));
+        return false;
+    }
+
+    TArray<TSharedPtr<FJsonValue>> JsonLocations;
+    JsonLocations.Reserve(LocationIds.Num());
+
+    for (int64 LocId : LocationIds)
+    {
+        if (LocId <= 0 || CheckedLocations.Contains(LocId))
+        {
+            continue;
+        }
+
+        CheckedLocations.Add(LocId);
+        JsonLocations.Add(MakeShared<FJsonValueNumber>(static_cast<double>(LocId)));
+    }
+
+    if (JsonLocations.Num() == 0)
+    {
+        return false;
+    }
+
+    TSharedPtr<FJsonObject> PacketObj = MakeShared<FJsonObject>();
+    PacketObj->SetStringField(TEXT("cmd"), TEXT("LocationChecks"));
+    PacketObj->SetArrayField(TEXT("locations"), JsonLocations);
+
+    TArray<TSharedPtr<FJsonValue>> RootArray;
+    RootArray.Add(MakeShared<FJsonValueObject>(PacketObj));
+
+    FString OutputString;
+    const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
+    FJsonSerializer::Serialize(RootArray, Writer);
+
+    ArchipelagoWebSocket->SendMessage(OutputString);
+
+    UE_LOG(LogArchipelago, Log, TEXT("Sent LocationChecks for %d new location(s)."), JsonLocations.Num());
+    return true;
 }
 
 void UArchipelagoSubsystem::ProcessIncomingMessage(const FString& Message)
@@ -565,6 +619,10 @@ void UArchipelagoSubsystem::ProcessIncomingMessage(const FString& Message)
         else if (Command == TEXT("PrintJSON"))
         {
             HandlePrintJSON(JsonObject);
+        }
+        else if (Command == TEXT("DataPackage"))
+        {
+            HandleDataPackage(JsonObject);
         }
         else
         {
@@ -742,9 +800,7 @@ void UArchipelagoSubsystem::HandleConnected(const TSharedPtr<FJsonObject>& JsonO
             const TSharedPtr<FJsonObject> PlayerObject = Value->AsObject();
 
             if (!PlayerObject.IsValid())
-            {
                 continue;
-            }
 
             FAPPlayer Player;
 
@@ -752,9 +808,42 @@ void UArchipelagoSubsystem::HandleConnected(const TSharedPtr<FJsonObject>& JsonO
             PlayerObject->TryGetNumberField(TEXT("slot"), Player.Slot);
             PlayerObject->TryGetStringField(TEXT("alias"), Player.Alias);
             PlayerObject->TryGetStringField(TEXT("name"), Player.Name);
-            PlayerObject->TryGetStringField(TEXT("class"), Player.PlayerClass);
 
             Players.Add(MoveTemp(Player));
+        }
+    }
+
+    // Slot Info (Game Names)
+    const TSharedPtr<FJsonObject>* SlotInfoObject = nullptr;
+
+    if (JsonObject->TryGetObjectField(TEXT("slot_info"), SlotInfoObject)
+        && SlotInfoObject && SlotInfoObject->IsValid())
+    {
+        for (const TPair<FString, TSharedPtr<FJsonValue>>& SlotPair : (*SlotInfoObject)->Values)
+        {
+            const TSharedPtr<FJsonObject> SlotObject = SlotPair.Value->AsObject();
+
+            if (!SlotObject.IsValid())
+                continue;
+
+            const int32 Slot = FCString::Atoi(*SlotPair.Key);
+
+            FString gameName;
+
+            if (!SlotObject->TryGetStringField(TEXT("game"), gameName))
+                continue;
+
+            // Match the slot to the existing player.
+            for (FAPPlayer& Player : Players)
+            {
+                if (Player.Slot == Slot)
+                {
+                    Player.PlayerClass = gameName;
+
+                    UE_LOG(LogArchipelago, Log, TEXT("Player: %s | Slot: %d | Game: %s"), *Player.Alias, Player.Slot, *Player.PlayerClass);
+                    break;
+                }
+            }
         }
     }
 
@@ -768,6 +857,24 @@ void UArchipelagoSubsystem::HandleConnected(const TSharedPtr<FJsonObject>& JsonO
 
     UE_LOG(LogArchipelago, Log, TEXT("Connected successfully! Team: %d | Slot: %d | Players: %d"), ConnectedTeam, ConnectedSlot, Players.Num());
     OnConnected.Broadcast();
+
+    // Get DataPackages for all games in this Archipelago session.
+    TArray<FString> GameNames;
+
+    for (const FAPPlayer& Player : Players)
+    {
+        if (!Player.PlayerClass.IsEmpty())
+        {
+            GameNames.AddUnique(Player.PlayerClass);
+        }
+    }
+
+    GameNames.AddUnique("Archipelago");
+
+    if (!GameNames.IsEmpty())
+    {
+        RequestDataPackage(GameNames);
+    }
 }
 
 void UArchipelagoSubsystem::HandleConnectionRefused(const TSharedPtr<FJsonObject>& JsonObject)
@@ -775,8 +882,7 @@ void UArchipelagoSubsystem::HandleConnectionRefused(const TSharedPtr<FJsonObject
     UE_LOG(LogArchipelago, Warning, TEXT("Processing ConnectionRefused."));
 }
 
-void UArchipelagoSubsystem::HandleReceivedItems(
-    const TSharedPtr<FJsonObject>& JsonObject)
+void UArchipelagoSubsystem::HandleReceivedItems(const TSharedPtr<FJsonObject>& JsonObject)
 {
     if (!JsonObject.IsValid())
     {
@@ -795,8 +901,10 @@ void UArchipelagoSubsystem::HandleReceivedItems(
         return;
     }
 
+    // Store only the newly received items.
+    TArray<FAPNetworkItem> NewItems;
+
     // Index 0 means this is the initial item history.
-    // Subsequent messages contain new items starting at their supplied index.
     if (Index == 0)
     {
         ReceivedItems.Empty();
@@ -818,18 +926,37 @@ void UArchipelagoSubsystem::HandleReceivedItems(
         ItemObject->TryGetNumberField(TEXT("player"), Item.Player);
         ItemObject->TryGetNumberField(TEXT("flags"), Item.Flags);
 
+        NewItems.Add(Item);
         ReceivedItems.Add(MoveTemp(Item));
     }
 
     ReceivedItemsIndex = ReceivedItems.Num();
 
-    UE_LOG(
-        LogArchipelago,
-        Log,
-        TEXT("Received %d items. Total item history: %d"),
-        ItemsArray->Num(),
-        ReceivedItems.Num()
-    );
+    UE_LOG(LogArchipelago, Log, TEXT("Received %d items. Total item history: %d"), NewItems.Num(), ReceivedItems.Num());
+
+    if (GameData.Find(GameName))
+    {
+        TArray<FAPResolvedNetworkItem> NewResolvedItems;
+
+        // Resolve only newly received items.
+        for (const FAPNetworkItem& Item : NewItems)
+        {
+            FAPResolvedNetworkItem ResolvedItem = ResolveNetworkItem(Item);
+
+            UE_LOG(LogArchipelago, Log, TEXT("Item: %s | Location: %s | ID: %lld"),
+                *ResolvedItem.ItemName,
+                *ResolvedItem.LocationName,
+                ResolvedItem.ItemID);
+
+            NewResolvedItems.Add(ResolvedItem);
+        }
+
+        // Append newly resolved items to the complete history.
+        ReceivedItemsResolved.Append(NewResolvedItems);
+
+        // Only broadcast OnReceivedItems after the GameData was locally processed.
+        OnReceivedItems.Broadcast(NewResolvedItems);
+    }
 }
 
 void UArchipelagoSubsystem::HandlePrintJSON(const TSharedPtr<FJsonObject>& JsonObject)
@@ -878,10 +1005,13 @@ void UArchipelagoSubsystem::HandlePrintJSON(const TSharedPtr<FJsonObject>& JsonO
             continue;
         }
 
-        Segment.Color = GetPrintJSONColor(Segment.Type);
+        int32 SegmentPlayer = 0;
+        DataObject->TryGetNumberField(TEXT("player"), SegmentPlayer);
 
+        Segment.Color = GetPrintJSONColor(Segment.Type);
         Message.PlainText += Segment.Text;
-        Message.Segments.Add(Segment);
+
+        Message.Segments.Add(ParsePrintJSONSegment(Segment, SegmentPlayer));
     }
 
     if (Message.Segments.IsEmpty())
@@ -889,8 +1019,105 @@ void UArchipelagoSubsystem::HandlePrintJSON(const TSharedPtr<FJsonObject>& JsonO
         return;
     }
 
-    UE_LOG(LogArchipelago, Log, TEXT("Archipelago: %s"), *Message.PlainText);
+    UE_LOG(LogArchipelago, Log, TEXT("%s"), *Message.PlainText);
     OnPrintJSON.Broadcast(Message);
+}
+
+void UArchipelagoSubsystem::HandleDataPackage(const TSharedPtr<FJsonObject>& JsonObject)
+{
+    if (!JsonObject.IsValid())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("DataPackage received an invalid JSON object."));
+        return;
+    }
+
+    // Get the data object.
+    const TSharedPtr<FJsonObject>* DataObject = nullptr;
+
+    if (!JsonObject->TryGetObjectField(TEXT("data"), DataObject) || !DataObject || !DataObject->IsValid())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("DataPackage is missing its data object."));
+        return;
+    }
+
+    // Get the games object.
+    const TSharedPtr<FJsonObject>* GamesObject = nullptr;
+
+    FString DebugJson;
+
+    const TSharedRef<TJsonWriter<>> Writer =
+        TJsonWriterFactory<>::Create(&DebugJson);
+
+    FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
+
+    UE_LOG(LogArchipelago, Warning,
+        TEXT("Received DataPackage JSON:\n%s"),
+        *DebugJson);
+
+    if (!(*DataObject)->TryGetObjectField(TEXT("games"), GamesObject) || !GamesObject || !GamesObject->IsValid())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("DataPackage is missing its games object."));
+        return;
+    }
+
+    // Process every game.
+    for (const TPair<FString, TSharedPtr<FJsonValue>>& GamePair : (*GamesObject)->Values)
+    {
+        const FString& Name = GamePair.Key;
+        const TSharedPtr<FJsonObject> GameObject = GamePair.Value->AsObject();
+
+        if (!GameObject.IsValid())
+        {
+            continue;
+        }
+
+        FAPGameData& CurrentGameData = GameData.FindOrAdd(Name);
+
+        // ------------------------------------------------
+        // Parse Item Names
+        // ------------------------------------------------
+
+        const TSharedPtr<FJsonObject>* ItemsObject = nullptr;
+
+        if (GameObject->TryGetObjectField(TEXT("item_name_to_id"), ItemsObject) && ItemsObject && ItemsObject->IsValid())
+        {
+            CurrentGameData.ItemNames.Empty();
+
+            for (const TPair<FString, TSharedPtr<FJsonValue>>& ItemPair : (*ItemsObject)->Values)
+            {
+                const int64 ItemID = static_cast<int64>(ItemPair.Value->AsNumber());
+
+                CurrentGameData.ItemNames.Add(ItemID, ItemPair.Key);
+            }
+        }
+
+        // ------------------------------------------------
+        // Parse Location Names
+        // ------------------------------------------------
+
+        const TSharedPtr<FJsonObject>* LocationsObject = nullptr;
+
+        if (GameObject->TryGetObjectField(TEXT("location_name_to_id"), LocationsObject) && LocationsObject && LocationsObject->IsValid())
+        {
+            CurrentGameData.LocationNames.Empty();
+
+            for (const TPair<FString, TSharedPtr<FJsonValue>>& LocationPair : (*LocationsObject)->Values)
+            {
+                const int64 LocationID = static_cast<int64>(LocationPair.Value->AsNumber());
+
+                CurrentGameData.LocationNames.Add(LocationID, LocationPair.Key);
+            }
+        }
+
+        UE_LOG(LogArchipelago, Log, TEXT("DataPackage processed for %s | Items: %d | Locations: %d"), *Name, CurrentGameData.ItemNames.Num(), CurrentGameData.LocationNames.Num());
+    }
+
+    UE_LOG(LogArchipelago, Warning,
+        TEXT("DataPackage contains %d games."),
+        (*GamesObject)->Values.Num());
+
+    UE_LOG(LogArchipelago, Log, TEXT("DataPackage processing completed. Games: %d"), GameData.Num());
+    RequestSync();
 }
 
 void UArchipelagoSubsystem::ParseVersion(const TSharedPtr<FJsonObject>& JsonObject, FAPVersion& OutVersion)
@@ -912,6 +1139,78 @@ void UArchipelagoSubsystem::ParseVersion(const TSharedPtr<FJsonObject>& JsonObje
     OutVersion.Major = Major;
     OutVersion.Minor = Minor;
     OutVersion.Build = Build;
+}
+
+FAPPrintJSONSegment UArchipelagoSubsystem::ParsePrintJSONSegment(const FAPPrintJSONSegment Segment, int32 PlayerID)
+{
+    FAPPrintJSONSegment Out = Segment;
+
+    auto GetTargetGameData = [this, PlayerID]() -> const FAPGameData*
+        {
+            if (PlayerID == 0)
+            {
+                return GameData.Find(TEXT("Archipelago"));
+            }
+
+            if (const FAPPlayer* Owner = Players.FindByPredicate([PlayerID](const FAPPlayer& P) { return P.Slot == PlayerID; }))
+            {
+                if (!Owner->PlayerClass.IsEmpty())
+                {
+                    if (const FAPGameData* OwnerGame = GameData.Find(Owner->PlayerClass))
+                    {
+                        return OwnerGame;
+                    }
+                }
+            }
+
+            return GameData.Find(GameName);
+        };
+
+    if (Out.Type == TEXT("player_id"))
+    {
+        int32 Slot = 0;
+        if (LexTryParseString(Slot, *Out.Text))
+        {
+            if (Slot == 0)
+            {
+                Out.Text = TEXT("Archipelago Server");
+            }
+            else if (const FAPPlayer* Player = Players.FindByPredicate([Slot](const FAPPlayer& P) { return P.Slot == Slot; }))
+            {
+                Out.Text = !Player->Alias.IsEmpty() ? Player->Alias : Player->Name;
+            }
+        }
+    }
+    else if (Out.Type == TEXT("item_id"))
+    {
+        int64 ItemId = 0;
+        if (LexTryParseString(ItemId, *Out.Text))
+        {
+            if (const FAPGameData* TargetGame = GetTargetGameData())
+            {
+                if (const FString* ItemName = TargetGame->ItemNames.Find(ItemId))
+                {
+                    Out.Text = *ItemName;
+                }
+            }
+        }
+    }
+    else if (Out.Type == TEXT("location_id"))
+    {
+        int64 LocationId = 0;
+        if (LexTryParseString(LocationId, *Out.Text))
+        {
+            if (const FAPGameData* TargetGame = GetTargetGameData())
+            {
+                if (const FString* LocationName = TargetGame->LocationNames.Find(LocationId))
+                {
+                    Out.Text = *LocationName;
+                }
+            }
+        }
+    }
+
+    return Out;
 }
 
 void UArchipelagoSubsystem::SendConnectPacket()
@@ -982,3 +1281,140 @@ void UArchipelagoSubsystem::SendConnectPacket()
 
     UE_LOG(LogArchipelago, Log, TEXT("Archipelago Connect packet sent."));
 }
+
+void UArchipelagoSubsystem::RequestDataPackage(const TArray<FString>& GameNames)
+{
+    TSharedPtr<FJsonObject> RequestObject = MakeShared<FJsonObject>();
+
+    RequestObject->SetStringField(TEXT("cmd"), TEXT("GetDataPackage"));
+
+    TArray<TSharedPtr<FJsonValue>> GamesArray;
+
+    for (const FString& Game : GameNames)
+    {
+        GamesArray.Add(MakeShared<FJsonValueString>(Game));
+    }
+
+    RequestObject->SetArrayField(TEXT("games"), GamesArray);
+
+    TArray<TSharedPtr<FJsonValue>> Packets;
+    Packets.Add(MakeShared<FJsonValueObject>(RequestObject));
+
+    FString Output;
+    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output);
+
+    FJsonSerializer::Serialize(Packets, Writer);
+
+    ArchipelagoWebSocket->SendMessage(Output);
+}
+
+void UArchipelagoSubsystem::RequestSync()
+{
+    TSharedPtr<FJsonObject> SyncObject = MakeShared<FJsonObject>();
+
+    SyncObject->SetStringField(TEXT("cmd"), TEXT("Sync"));
+
+    TArray<TSharedPtr<FJsonValue>> PacketArray;
+
+    PacketArray.Add(MakeShared<FJsonValueObject>(SyncObject));
+
+    FString JsonString;
+
+    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
+
+    FJsonSerializer::Serialize(PacketArray, Writer);
+
+    // Send through WebSocket
+    ArchipelagoWebSocket->SendMessage(JsonString);
+}
+
+
+FAPResolvedNetworkItem UArchipelagoSubsystem::ResolveNetworkItem(const FAPNetworkItem& NetworkItem) const
+{
+    FAPResolvedNetworkItem Result;
+
+    Result.ItemID = NetworkItem.Item;
+    Result.LocationID = NetworkItem.Location;
+    Result.PlayerSlot = NetworkItem.Player;
+
+    // Resolve the correct game's DataPackage.
+    const FAPGameData* LocationGameData = nullptr;
+
+    if (NetworkItem.Player == 0)
+    {
+        // Player 0 represents the Archipelago Server.
+        LocationGameData = GameData.Find(TEXT("Archipelago"));
+
+        Result.PlayerName = TEXT("Archipelago Server");
+        Result.bPlayerNameFound = true;
+    }
+    else
+    {
+        // Find the player who originally sent/owns the item.
+        const FAPPlayer* LocationOwner = Players.FindByPredicate(
+            [&NetworkItem](const FAPPlayer& Player)
+            {
+                return Player.Slot == NetworkItem.Player;
+            }
+        );
+
+        if (LocationOwner)
+        {
+            // Resolve the correct game's DataPackage.
+            LocationGameData = GameData.Find(LocationOwner->PlayerClass);
+
+            // Resolve player name.
+            Result.PlayerName = LocationOwner->Alias;
+            Result.bPlayerNameFound = true;
+        }
+    }
+
+    // Resolve item name using the receiving player's own game DataPackage.
+    if (const FAPGameData* ReceivingGameData = GameData.Find(GameName))
+    {
+        if (const FString* ItemName = ReceivingGameData->ItemNames.Find(NetworkItem.Item))
+        {
+            Result.ItemName = *ItemName;
+            Result.bItemNameFound = true;
+        }
+    }
+
+    // Resolve location name using the sending slot's game DataPackage.
+    if (LocationGameData)
+    {
+        if (const FString* LocationName = LocationGameData->LocationNames.Find(NetworkItem.Location))
+        {
+            Result.LocationName = *LocationName;
+            Result.bLocationNameFound = true;
+        }
+    }
+
+    // Resolve item and location names.
+    /*
+    if (LocationGameData)
+    {
+        if (const FString* ItemName =
+            LocationGameData->ItemNames.Find(NetworkItem.Item))
+        {
+            Result.ItemName = *ItemName;
+            Result.bItemNameFound = true;
+        }
+    }
+    */
+
+    // Decode item classifications.
+    if ((NetworkItem.Flags & 1) != 0)
+        Result.Classifications.Add(EAPItemClassification::Advancement);
+
+    if ((NetworkItem.Flags & 2) != 0)
+        Result.Classifications.Add(EAPItemClassification::NeverExclude);
+
+    if ((NetworkItem.Flags & 4) != 0)
+        Result.Classifications.Add(EAPItemClassification::Useful);
+
+    if ((NetworkItem.Flags & 8) != 0)
+        Result.Classifications.Add(EAPItemClassification::Trap);
+
+    return Result;
+}
+
