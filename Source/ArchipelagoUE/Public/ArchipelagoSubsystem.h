@@ -18,6 +18,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPPrintJSON, const FAPPrintJSONMe
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPReceivedItems, const TArray<FAPResolvedNetworkItem>&, ReceivedItems);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPLocationInfoReceived, const TArray<FAPResolvedNetworkItem>&, LocationInfo);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPRoomUpdated, const FAPRoomUpdate&, RoomUpdate);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPPrintReceived, const FString&, Message);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPInvalidPacketReceived, const FAPInvalidPacket&, InvalidPacket);
 
 UCLASS()
 class ARCHIPELAGOUE_API UArchipelagoSubsystem : public UGameInstanceSubsystem
@@ -47,6 +49,9 @@ public:
     FOnAPPrintJSON OnPrintJSON;
 
     UPROPERTY(BlueprintAssignable, Category = "Archipelago|Events")
+    FOnAPPrintReceived OnPrint;
+
+    UPROPERTY(BlueprintAssignable, Category = "Archipelago|Events")
     FOnAPReceivedItems OnReceivedItems;
 
     UPROPERTY(BlueprintAssignable, Category = "Archipelago|Events")
@@ -54,6 +59,9 @@ public:
 
     UPROPERTY(BlueprintAssignable, Category = "Archipelago|Events")
     FOnAPRoomUpdated OnRoomUpdated;
+
+    UPROPERTY(BlueprintAssignable, Category = "Archipelago|Events")
+    FOnAPInvalidPacketReceived OnInvalidPacketReceived;
 
 #pragma region Config
 
@@ -154,6 +162,12 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Archipelago")
     bool RequestLocationScouts(const TArray<int64>& LocationIds);
 
+    UFUNCTION(BlueprintCallable, Category = "Archipelago")
+    bool RequestSync();
+
+    UFUNCTION(BlueprintCallable, Category = "Archipelago")
+    bool SendStatusUpdate(EAPClientStatus Status);
+
 private:
 
     UPROPERTY()
@@ -214,9 +228,11 @@ private:
     void HandleConnectionRefused(const TSharedPtr<FJsonObject>& JsonObject);
     void HandleReceivedItems(const TSharedPtr<FJsonObject>& JsonObject);
     void HandlePrintJSON(const TSharedPtr<FJsonObject>& JsonObject);
+    void HandlePrint(const TSharedPtr<FJsonObject>& JsonObject);
     void HandleDataPackage(const TSharedPtr<FJsonObject>& JsonObject);
     void HandleLocationInfo(const TSharedPtr<FJsonObject>& JsonObject);
     void HandleRoomUpdate(const TSharedPtr<FJsonObject>& JsonObject);
+    void HandleInvalidPacket(const TSharedPtr<FJsonObject>& JsonObject);
 
     // Parser for Version JSON
     void ParseVersion(const TSharedPtr<FJsonObject>& JsonObject, FAPVersion& OutVersion);
@@ -228,7 +244,6 @@ private:
     void SendConnectPacket();
 
     void RequestDataPackage(const TArray<FString>& GameNames);
-    void RequestSync();
 
     UFUNCTION(BlueprintCallable, Category = "Archipelago|Chat")
     bool SendChatMessage(const FString& Message);

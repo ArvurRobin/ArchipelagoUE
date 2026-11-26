@@ -620,6 +620,87 @@ bool UArchipelagoSubsystem::RequestLocationScouts(const TArray<int64>& LocationI
     return true;
 }
 
+bool UArchipelagoSubsystem::RequestSync()
+{
+    if (!IsValid(ArchipelagoWebSocket))
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Cannot request sync: WebSocket doesn't exist."));
+        return false;
+    }
+
+    if (!ArchipelagoWebSocket->IsConnected())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Cannot request sync: WebSocket is not connected."));
+        return false;
+    }
+
+    TSharedPtr<FJsonObject> SyncObject = MakeShared<FJsonObject>();
+    SyncObject->SetStringField(TEXT("cmd"), TEXT("Sync"));
+
+    TArray<TSharedPtr<FJsonValue>> PacketArray;
+    PacketArray.Add(MakeShared<FJsonValueObject>(SyncObject));
+
+    FString JsonString;
+    const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
+
+    if (!FJsonSerializer::Serialize(PacketArray, Writer))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to serialize Sync request."));
+        return false;
+    }
+
+    ArchipelagoWebSocket->SendMessage(JsonString);
+
+    UE_LOG(LogArchipelago, Log, TEXT("Requested item synchronization."));
+    return true;
+}
+
+bool UArchipelagoSubsystem::SendStatusUpdate(EAPClientStatus Status)
+{
+    if (!IsValid(ArchipelagoWebSocket))
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Cannot send status update: WebSocket doesn't exist."));
+        return false;
+    }
+
+    if (!ArchipelagoWebSocket->IsConnected())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Cannot send status update: WebSocket is not connected."));
+        return false;
+    }
+
+    const int32 StatusValue = static_cast<int32>(Status);
+
+    if (StatusValue != 0 && StatusValue != 10 && StatusValue != 20 && StatusValue != 30)
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Invalid client status: %d"), StatusValue);
+        return false;
+    }
+
+    TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
+
+    JsonObject->SetStringField(TEXT("cmd"), TEXT("StatusUpdate"));
+    JsonObject->SetNumberField(TEXT("status"), StatusValue);
+
+    TArray<TSharedPtr<FJsonValue>> JsonArray;
+    JsonArray.Add(MakeShared<FJsonValueObject>(JsonObject));
+
+    FString OutputString;
+    const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
+
+    if (!FJsonSerializer::Serialize(JsonArray, Writer))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to serialize StatusUpdate request."));
+        return false;
+    }
+
+    ArchipelagoWebSocket->SendMessage(OutputString);
+
+    UE_LOG(LogArchipelago, Log, TEXT("Sent status update: %d"), StatusValue);
+
+    return true;
+}
+
 void UArchipelagoSubsystem::ProcessIncomingMessage(const FString& Message)
 {
     // Parse incoming JSON.
@@ -681,6 +762,10 @@ void UArchipelagoSubsystem::ProcessIncomingMessage(const FString& Message)
         {
             HandlePrintJSON(JsonObject);
         }
+        else if (Command == TEXT("Print"))
+        {
+            HandlePrint(JsonObject);
+        }
         else if (Command == TEXT("DataPackage"))
         {
             HandleDataPackage(JsonObject);
@@ -692,6 +777,10 @@ void UArchipelagoSubsystem::ProcessIncomingMessage(const FString& Message)
         else if (Command == TEXT("RoomUpdate"))
         {
             HandleRoomUpdate(JsonObject);
+        }
+        else if (Command == TEXT("InvalidPacket"))
+        {
+            HandleInvalidPacket(JsonObject);
         }
         else
         {
@@ -1009,33 +1098,33 @@ void UArchipelagoSubsystem::HandleReceivedItems(const TSharedPtr<FJsonObject>& J
     }
 
     int32 Index = 0;
-    JsonObject->TryGetNumberField(TEXT("index"), Index);
+
+    if (!JsonObject->TryGetNumberField(TEXT("index"), Index))
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("ReceivedItems has no index field."));
+        return;
+    }
 
     const TArray<TSharedPtr<FJsonValue>>* ItemsArray = nullptr;
 
-    if (!JsonObject->TryGetArrayField(TEXT("items"), ItemsArray))
+    if (!JsonObject->TryGetArrayField(TEXT("items"), ItemsArray) || !ItemsArray)
     {
         UE_LOG(LogArchipelago, Warning, TEXT("ReceivedItems has no items array."));
         return;
     }
 
-    // Store only the newly received items.
-    TArray<FAPNetworkItem> NewItems;
-
-    // Index 0 means this is the initial item history.
-    if (Index == 0)
-    {
-        ReceivedItems.Empty();
-    }
+    // Parse incoming items.
+    TArray<FAPNetworkItem> IncomingItems;
 
     for (const TSharedPtr<FJsonValue>& Value : *ItemsArray)
     {
+        if (!Value.IsValid() || Value->Type != EJson::Object)
+            continue;
+
         const TSharedPtr<FJsonObject> ItemObject = Value->AsObject();
 
         if (!ItemObject.IsValid())
-        {
             continue;
-        }
 
         FAPNetworkItem Item;
 
@@ -1044,36 +1133,109 @@ void UArchipelagoSubsystem::HandleReceivedItems(const TSharedPtr<FJsonObject>& J
         ItemObject->TryGetNumberField(TEXT("player"), Item.Player);
         ItemObject->TryGetNumberField(TEXT("flags"), Item.Flags);
 
-        NewItems.Add(Item);
-        ReceivedItems.Add(MoveTemp(Item));
+        IncomingItems.Add(MoveTemp(Item));
+    }
+
+    TArray<FAPNetworkItem> NewItems;
+
+    // Full item history (initial connection or Sync).
+    if (Index == 0)
+    {
+        if (ReceivedItems.IsEmpty())
+        {
+            // Initial item history: everything is new.
+            NewItems = IncomingItems;
+        }
+        else
+        {
+            // Determine whether the existing history is a prefix
+            // of the newly received complete history.
+            bool bHistoryMatches = IncomingItems.Num() >= ReceivedItems.Num();
+
+            if (bHistoryMatches)
+            {
+                for (int32 i = 0; i < ReceivedItems.Num(); ++i)
+                {
+                    const FAPNetworkItem& Existing = ReceivedItems[i];
+                    const FAPNetworkItem& Incoming = IncomingItems[i];
+
+                    if (Existing.Item != Incoming.Item ||
+                        Existing.Location != Incoming.Location ||
+                        Existing.Player != Incoming.Player ||
+                        Existing.Flags != Incoming.Flags)
+                    {
+                        bHistoryMatches = false;
+                        break;
+                    }
+                }
+            }
+
+            if (bHistoryMatches)
+            {
+                // Only items beyond our existing history are new.
+                for (int32 i = ReceivedItems.Num(); i < IncomingItems.Num(); ++i)
+                {
+                    NewItems.Add(IncomingItems[i]);
+                }
+            }
+            else
+            {
+                UE_LOG(LogArchipelago, Warning, TEXT("ReceivedItems history differs from local history. Replacing local history without rebroadcasting old items."));
+            }
+        }
+
+        // Replace the complete history.
+        ReceivedItems = IncomingItems;
+    }
+    else
+    {
+        // Incremental update: index must match the next expected item.
+        if (Index != ReceivedItems.Num())
+        {
+            UE_LOG(LogArchipelago, Warning, TEXT("ReceivedItems index mismatch. Expected: %d | Received: %d. Requesting full sync."), ReceivedItems.Num(), Index);
+
+            RequestSync();
+            return;
+        }
+
+        NewItems = IncomingItems;
+        ReceivedItems.Append(IncomingItems);
     }
 
     ReceivedItemsIndex = ReceivedItems.Num();
 
-    UE_LOG(LogArchipelago, Log, TEXT("Received %d items. Total item history: %d"), NewItems.Num(), ReceivedItems.Num());
+    UE_LOG(LogArchipelago, Log, TEXT("Received %d new items. Total item history: %d"), NewItems.Num(), ReceivedItems.Num());
 
-    if (GameData.Find(GameName))
+    // Resolve the complete history.
+    if (GameData.Contains(GameName))
     {
+        ReceivedItemsResolved.Empty();
+
+        for (const FAPNetworkItem& Item : ReceivedItems)
+        {
+            ReceivedItemsResolved.Add(ResolveNetworkItem(Item));
+        }
+
+        // Build the resolved list containing only new items.
         TArray<FAPResolvedNetworkItem> NewResolvedItems;
 
-        // Resolve only newly received items.
         for (const FAPNetworkItem& Item : NewItems)
         {
-            FAPResolvedNetworkItem ResolvedItem = ResolveNetworkItem(Item);
+            const FAPResolvedNetworkItem ResolvedItem = ResolveNetworkItem(Item);
 
             UE_LOG(LogArchipelago, Log, TEXT("Item: %s | Location: %s | ID: %lld"),
                 *ResolvedItem.ItemName,
                 *ResolvedItem.LocationName,
-                ResolvedItem.ItemID);
+                ResolvedItem.ItemID
+            );
 
             NewResolvedItems.Add(ResolvedItem);
         }
 
-        // Append newly resolved items to the complete history.
-        ReceivedItemsResolved.Append(NewResolvedItems);
-
-        // Only broadcast OnReceivedItems after the GameData was locally processed.
-        OnReceivedItems.Broadcast(NewResolvedItems);
+        if (!NewResolvedItems.IsEmpty())
+        {
+            OnReceivedItems.Broadcast(NewResolvedItems);
+        }
     }
 }
 
@@ -1146,6 +1308,33 @@ void UArchipelagoSubsystem::HandlePrintJSON(const TSharedPtr<FJsonObject>& JsonO
 
     UE_LOG(LogArchipelago, Log, TEXT("%s"), *Message.PlainText);
     OnPrintJSON.Broadcast(Message);
+}
+
+void UArchipelagoSubsystem::HandlePrint(const TSharedPtr<FJsonObject>& JsonObject)
+{
+    if (!JsonObject.IsValid())
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Print received an invalid JSON object."));
+        return;
+    }
+
+    FString Message;
+
+    if (!JsonObject->TryGetStringField(TEXT("text"), Message))
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Print packet contains no valid text field."));
+        return;
+    }
+
+    if (Message.IsEmpty())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Print packet contains empty text field."));
+        return;
+    }
+
+    UE_LOG(LogArchipelago, Log, TEXT("%s"), *Message);
+
+    OnPrint.Broadcast(Message);
 }
 
 void UArchipelagoSubsystem::HandleDataPackage(const TSharedPtr<FJsonObject>& JsonObject)
@@ -1459,6 +1648,34 @@ void UArchipelagoSubsystem::HandleRoomUpdate(const TSharedPtr<FJsonObject>& Json
     OnRoomUpdated.Broadcast(Update);
 }
 
+void UArchipelagoSubsystem::HandleInvalidPacket(const TSharedPtr<FJsonObject>& JsonObject)
+{
+    if (!JsonObject.IsValid())
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("InvalidPacket received an invalid JSON object."));
+        return;
+    }
+
+    FAPInvalidPacket InvalidPacket;
+
+    if (!JsonObject->TryGetStringField(TEXT("type"), InvalidPacket.Type))
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("InvalidPacket contains no valid type field."));
+        return;
+    }
+
+    JsonObject->TryGetStringField(TEXT("original_cmd"), InvalidPacket.OriginalCommand);
+    JsonObject->TryGetStringField(TEXT("text"), InvalidPacket.Message);
+
+    UE_LOG(LogArchipelago, Warning,
+        TEXT("Server reported an invalid packet! Type: %s | Command: %s | Message: %s"),
+        *InvalidPacket.Type,
+        InvalidPacket.OriginalCommand.IsEmpty() ? TEXT("Unknown") : *InvalidPacket.OriginalCommand,
+        *InvalidPacket.Message);
+
+    OnInvalidPacketReceived.Broadcast(InvalidPacket);
+}
+
 void UArchipelagoSubsystem::ParseVersion(const TSharedPtr<FJsonObject>& JsonObject, FAPVersion& OutVersion)
 {
     if (!JsonObject.IsValid())
@@ -1645,26 +1862,6 @@ void UArchipelagoSubsystem::RequestDataPackage(const TArray<FString>& GameNames)
     FJsonSerializer::Serialize(Packets, Writer);
 
     ArchipelagoWebSocket->SendMessage(Output);
-}
-
-void UArchipelagoSubsystem::RequestSync()
-{
-    TSharedPtr<FJsonObject> SyncObject = MakeShared<FJsonObject>();
-
-    SyncObject->SetStringField(TEXT("cmd"), TEXT("Sync"));
-
-    TArray<TSharedPtr<FJsonValue>> PacketArray;
-
-    PacketArray.Add(MakeShared<FJsonValueObject>(SyncObject));
-
-    FString JsonString;
-
-    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
-
-    FJsonSerializer::Serialize(PacketArray, Writer);
-
-    // Send through WebSocket
-    ArchipelagoWebSocket->SendMessage(JsonString);
 }
 
 bool UArchipelagoSubsystem::SendChatMessage(const FString& Message)

@@ -337,4 +337,28 @@ struct FAPRoomUpdate
     TArray<FAPCheckedLocation> CheckedLocations;
 };
 
+UENUM(BlueprintType)
+enum class EAPClientStatus : uint8
+{
+    Unknown = 0         UMETA(DisplayName = "Unknown"),
+    Ready = 10          UMETA(DisplayName = "Ready"),
+    Playing = 20        UMETA(DisplayName = "Playing"),
+    Goal = 30           UMETA(DisplayName = "Goal")
+};
+
+USTRUCT(BlueprintType)
+struct FAPInvalidPacket
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Network")
+    FString Type;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Network")
+    FString OriginalCommand;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Network")
+    FString Message;
+};
+
 #pragma endregion
