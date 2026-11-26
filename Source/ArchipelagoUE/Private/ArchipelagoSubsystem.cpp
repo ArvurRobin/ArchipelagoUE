@@ -539,6 +539,7 @@ bool UArchipelagoSubsystem::SendLocationChecks(const TArray<int64>& LocationIds)
 
     if (JsonLocations.Num() == 0)
     {
+        UE_LOG(LogArchipelago, Warning, TEXT("Location check skipped: All provided locations have already been checked or contain invalid location IDs."));
         return false;
     }
 
@@ -556,6 +557,66 @@ bool UArchipelagoSubsystem::SendLocationChecks(const TArray<int64>& LocationIds)
     ArchipelagoWebSocket->SendMessage(OutputString);
 
     UE_LOG(LogArchipelago, Log, TEXT("Sent LocationChecks for %d new location(s)."), JsonLocations.Num());
+    return true;
+}
+
+bool UArchipelagoSubsystem::RequestLocationScout(int64 LocationId)
+{
+    return RequestLocationScouts({ LocationId });
+}
+
+bool UArchipelagoSubsystem::RequestLocationScouts(const TArray<int64>& LocationIds)
+{
+    if (!IsValid(ArchipelagoWebSocket))
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Cannot request location scouts: WebSocket doesn't exist."));
+        return false;
+    }
+
+    if (!ArchipelagoWebSocket->IsConnected())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Cannot request location scouts: WebSocket is not connected."));
+        return false;
+    }
+
+    TArray<TSharedPtr<FJsonValue>> JsonLocations;
+
+    for (int64 LocId : LocationIds)
+    {
+        if (LocId <= 0)
+            continue;
+
+        JsonLocations.Add(MakeShared<FJsonValueNumber>(static_cast<double>(LocId)));
+    }
+
+    if (JsonLocations.IsEmpty())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Location scout request skipped: No valid location IDs provided."));
+        return false;
+    }
+
+    TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
+
+    JsonObject->SetStringField(TEXT("cmd"), TEXT("LocationScouts"));
+    JsonObject->SetArrayField(TEXT("locations"), JsonLocations);
+    JsonObject->SetNumberField(TEXT("create_as_hint"), 0);
+
+    TArray<TSharedPtr<FJsonValue>> JsonArray;
+    JsonArray.Add(MakeShared<FJsonValueObject>(JsonObject));
+
+    FString OutputString;
+    const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
+
+    if (!FJsonSerializer::Serialize(JsonArray, Writer))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to serialize LocationScouts request."));
+        return false;
+    }
+
+    ArchipelagoWebSocket->SendMessage(OutputString);
+
+    UE_LOG(LogArchipelago, Log, TEXT("Requested scouts for %d location(s)."), JsonLocations.Num());
+
     return true;
 }
 
@@ -623,6 +684,14 @@ void UArchipelagoSubsystem::ProcessIncomingMessage(const FString& Message)
         else if (Command == TEXT("DataPackage"))
         {
             HandleDataPackage(JsonObject);
+        }
+        else if (Command == TEXT("LocationInfo"))
+        {
+            HandleLocationInfo(JsonObject);
+        }
+        else if (Command == TEXT("RoomUpdate"))
+        {
+            HandleRoomUpdate(JsonObject);
         }
         else
         {
@@ -808,16 +877,18 @@ void UArchipelagoSubsystem::HandleConnected(const TSharedPtr<FJsonObject>& JsonO
             PlayerObject->TryGetNumberField(TEXT("slot"), Player.Slot);
             PlayerObject->TryGetStringField(TEXT("alias"), Player.Alias);
             PlayerObject->TryGetStringField(TEXT("name"), Player.Name);
+            PlayerObject->TryGetStringField(TEXT("class"), Player.PlayerClass);
 
             Players.Add(MoveTemp(Player));
         }
     }
 
-    // Slot Info (Game Names)
+    // Slot Info
+    SlotInfo.Empty();
+
     const TSharedPtr<FJsonObject>* SlotInfoObject = nullptr;
 
-    if (JsonObject->TryGetObjectField(TEXT("slot_info"), SlotInfoObject)
-        && SlotInfoObject && SlotInfoObject->IsValid())
+    if (JsonObject->TryGetObjectField(TEXT("slot_info"), SlotInfoObject) && SlotInfoObject && SlotInfoObject->IsValid())
     {
         for (const TPair<FString, TSharedPtr<FJsonValue>>& SlotPair : (*SlotInfoObject)->Values)
         {
@@ -828,22 +899,20 @@ void UArchipelagoSubsystem::HandleConnected(const TSharedPtr<FJsonObject>& JsonO
 
             const int32 Slot = FCString::Atoi(*SlotPair.Key);
 
-            FString gameName;
+            FAPSlotInfo Info;
 
-            if (!SlotObject->TryGetStringField(TEXT("game"), gameName))
-                continue;
+            SlotObject->TryGetStringField(TEXT("name"), Info.Name);
+            SlotObject->TryGetStringField(TEXT("game"), Info.Game);
+            SlotObject->TryGetNumberField(TEXT("type"), Info.Type);
 
-            // Match the slot to the existing player.
-            for (FAPPlayer& Player : Players)
-            {
-                if (Player.Slot == Slot)
-                {
-                    Player.PlayerClass = gameName;
+            SlotInfo.Add(Slot, MoveTemp(Info));
 
-                    UE_LOG(LogArchipelago, Log, TEXT("Player: %s | Slot: %d | Game: %s"), *Player.Alias, Player.Slot, *Player.PlayerClass);
-                    break;
-                }
-            }
+            UE_LOG(LogArchipelago, Log,
+                TEXT("Slot: %d | Name: %s | Game: %s | Type: %d"),
+                Slot,
+                *SlotInfo[Slot].Name,
+                *SlotInfo[Slot].Game,
+                SlotInfo[Slot].Type);
         }
     }
 
@@ -861,15 +930,15 @@ void UArchipelagoSubsystem::HandleConnected(const TSharedPtr<FJsonObject>& JsonO
     // Get DataPackages for all games in this Archipelago session.
     TArray<FString> GameNames;
 
-    for (const FAPPlayer& Player : Players)
+    for (const TPair<int32, FAPSlotInfo>& SlotPair : SlotInfo)
     {
-        if (!Player.PlayerClass.IsEmpty())
+        if (!SlotPair.Value.Game.IsEmpty())
         {
-            GameNames.AddUnique(Player.PlayerClass);
+            GameNames.AddUnique(SlotPair.Value.Game);
         }
     }
 
-    GameNames.AddUnique("Archipelago");
+    GameNames.AddUnique(TEXT("Archipelago"));
 
     if (!GameNames.IsEmpty())
     {
@@ -879,7 +948,56 @@ void UArchipelagoSubsystem::HandleConnected(const TSharedPtr<FJsonObject>& JsonO
 
 void UArchipelagoSubsystem::HandleConnectionRefused(const TSharedPtr<FJsonObject>& JsonObject)
 {
-    UE_LOG(LogArchipelago, Warning, TEXT("Processing ConnectionRefused."));
+    if (!JsonObject.IsValid())
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("ConnectionRefused received an invalid JSON object."));
+        return;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* ErrorsArray = nullptr;
+
+    if (!JsonObject->TryGetArrayField(TEXT("errors"), ErrorsArray) || !ErrorsArray)
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Connection refused without an error description."));
+        return;
+    }
+
+    for (const TSharedPtr<FJsonValue>& Value : *ErrorsArray)
+    {
+        if (!Value.IsValid() || Value->Type != EJson::String)
+            continue;
+
+        const FString Error = Value->AsString();
+
+        if (Error == TEXT("InvalidSlot"))
+        {
+            UE_LOG(LogArchipelago, Error, TEXT("Connection refused: Invalid slot! Check your slot name."));
+        }
+        else if (Error == TEXT("InvalidGame"))
+        {
+            UE_LOG(LogArchipelago, Error, TEXT("Connection refused: Invalid game! Check your GameName!"));
+        }
+        else if (Error == TEXT("IncompatibleVersion"))
+        {
+            UE_LOG(LogArchipelago, Error, TEXT("Connection refused: Incompatible Archipelago version!"));
+        }
+        else if (Error == TEXT("InvalidPassword"))
+        {
+            UE_LOG(LogArchipelago, Error, TEXT("Connection refused: Invalid password! Check your password."));
+        }
+        else if (Error == TEXT("InvalidItemsHandling"))
+        {
+            UE_LOG(LogArchipelago, Error, TEXT("Connection refused: Invalid items_handling value!"));
+        }
+        else if (Error == TEXT("SlotAlreadyTaken"))
+        {
+            UE_LOG(LogArchipelago, Error, TEXT("Connection refused: This slot is already connected by another client."));
+        }
+        else
+        {
+            UE_LOG(LogArchipelago, Error, TEXT("Connection refused: Unknown error code: %s"), *Error);
+        }
+    }
 }
 
 void UArchipelagoSubsystem::HandleReceivedItems(const TSharedPtr<FJsonObject>& JsonObject)
@@ -1009,14 +1127,21 @@ void UArchipelagoSubsystem::HandlePrintJSON(const TSharedPtr<FJsonObject>& JsonO
         DataObject->TryGetNumberField(TEXT("player"), SegmentPlayer);
 
         Segment.Color = GetPrintJSONColor(Segment.Type);
-        Message.PlainText += Segment.Text;
-
         Message.Segments.Add(ParsePrintJSONSegment(Segment, SegmentPlayer));
     }
 
     if (Message.Segments.IsEmpty())
     {
+        UE_LOG(LogArchipelago, Warning, TEXT("PrintJSON contained no valid text segments."));
         return;
+    }
+
+    // Construct Message.PlainText from the resolved Segments.
+    Message.PlainText.Empty();
+
+    for (const FAPPrintJSONSegment& Segment : Message.Segments)
+    {
+        Message.PlainText += Segment.Text;
     }
 
     UE_LOG(LogArchipelago, Log, TEXT("%s"), *Message.PlainText);
@@ -1118,6 +1243,220 @@ void UArchipelagoSubsystem::HandleDataPackage(const TSharedPtr<FJsonObject>& Jso
 
     UE_LOG(LogArchipelago, Log, TEXT("DataPackage processing completed. Games: %d"), GameData.Num());
     RequestSync();
+}
+
+void UArchipelagoSubsystem::HandleLocationInfo(const TSharedPtr<FJsonObject>& JsonObject)
+{
+    if (!JsonObject.IsValid())
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("LocationInfo received an invalid JSON object."));
+        return;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* LocationsArray = nullptr;
+
+    if (!JsonObject->TryGetArrayField(TEXT("locations"), LocationsArray) || !LocationsArray)
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("LocationInfo packet contains no locations array."));
+        return;
+    }
+
+    TArray<FAPResolvedNetworkItem> ResolvedLocations;
+
+    for (const TSharedPtr<FJsonValue>& Value : *LocationsArray)
+    {
+        if (!Value.IsValid() || Value->Type != EJson::Object)
+            continue;
+
+        const TSharedPtr<FJsonObject> LocationObject = Value->AsObject();
+
+        if (!LocationObject.IsValid())
+            continue;
+
+        double ItemValue = 0.0;
+        double LocationValue = 0.0;
+        double PlayerValue = 0.0;
+        double FlagsValue = 0.0;
+
+        if (!LocationObject->TryGetNumberField(TEXT("item"), ItemValue) ||
+            !LocationObject->TryGetNumberField(TEXT("location"), LocationValue) ||
+            !LocationObject->TryGetNumberField(TEXT("player"), PlayerValue) ||
+            !LocationObject->TryGetNumberField(TEXT("flags"), FlagsValue))
+        {
+            UE_LOG(LogArchipelago, Warning, TEXT("LocationInfo contains an entry with missing or invalid fields."));
+            continue;
+        }
+
+        const int64 ItemID = static_cast<int64>(ItemValue);
+        const int64 LocationID = static_cast<int64>(LocationValue);
+        const int32 PlayerSlot = static_cast<int32>(PlayerValue);
+        const int32 Flags = static_cast<int32>(FlagsValue);
+
+        FAPResolvedNetworkItem Result;
+
+        Result.ItemID = ItemID;
+        Result.LocationID = LocationID;
+        Result.PlayerSlot = PlayerSlot;
+
+        // Resolve the item name using the recipient's game.
+        FString RecipientGame;
+
+        if (PlayerSlot == 0)
+        {
+            RecipientGame = TEXT("Archipelago");
+            Result.PlayerName = TEXT("Archipelago Server");
+            Result.bPlayerNameFound = true;
+        }
+        else
+        {
+            if (const FAPSlotInfo* RecipientSlotInfo = SlotInfo.Find(PlayerSlot))
+            {
+                RecipientGame = RecipientSlotInfo->Game;
+            }
+
+            for (const FAPPlayer& Player : Players)
+            {
+                if (Player.Slot == PlayerSlot)
+                {
+                    Result.PlayerName = !Player.Alias.IsEmpty() ? Player.Alias : Player.Name;
+                    Result.bPlayerNameFound = !Result.PlayerName.IsEmpty();
+                    break;
+                }
+            }
+        }
+
+        if (!RecipientGame.IsEmpty())
+        {
+            if (const FAPGameData* RecipientGameData = GameData.Find(RecipientGame))
+            {
+                if (const FString* ItemName = RecipientGameData->ItemNames.Find(ItemID))
+                {
+                    Result.ItemName = *ItemName;
+                    Result.bItemNameFound = true;
+                }
+            }
+        }
+
+        // The scouted location belongs to the connected player's game.
+        if (const FAPGameData* LocalGameData = GameData.Find(GameName))
+        {
+            if (const FString* LocationName = LocalGameData->LocationNames.Find(LocationID))
+            {
+                Result.LocationName = *LocationName;
+                Result.bLocationNameFound = true;
+            }
+        }
+
+        // Decode item classification flags.
+        if (Flags & 1)
+            Result.Classifications.Add(EAPItemClassification::Advancement);
+
+        if (Flags & 2)
+            Result.Classifications.Add(EAPItemClassification::NeverExclude);
+
+        if (Flags & 4)
+            Result.Classifications.Add(EAPItemClassification::Useful);
+
+        if (Flags & 8)
+            Result.Classifications.Add(EAPItemClassification::Trap);
+
+        ResolvedLocations.Add(MoveTemp(Result));
+    }
+
+    if (ResolvedLocations.IsEmpty())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("LocationInfo contained no valid location entries."));
+        return;
+    }
+
+    UE_LOG(LogArchipelago, Log, TEXT("Received scout information for %d location(s)."), ResolvedLocations.Num());
+    OnReceivedLocationInfo.Broadcast(ResolvedLocations);
+}
+
+void UArchipelagoSubsystem::HandleRoomUpdate(const TSharedPtr<FJsonObject>& JsonObject)
+{
+    if (!JsonObject.IsValid())
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Invalid RoomUpdate JSON object."));
+        return;
+    }
+
+    UE_LOG(LogArchipelago, Log, TEXT("Processing RoomUpdate..."));
+
+    // Hint Points
+    JsonObject->TryGetNumberField(TEXT("hint_points"), HintPoints);
+
+    // Checked Locations
+    const TArray<TSharedPtr<FJsonValue>>* CheckedArray = nullptr;
+
+    if (JsonObject->TryGetArrayField(TEXT("checked_locations"), CheckedArray) && CheckedArray)
+    {
+        for (const TSharedPtr<FJsonValue>& Value : *CheckedArray)
+        {
+            if (!Value.IsValid() || Value->Type != EJson::Number)
+                continue;
+
+            const int64 LocationID = static_cast<int64>(Value->AsNumber());
+
+            if (LocationID <= 0)
+                continue;
+
+            CheckedLocations.Add(LocationID);
+            MissingLocations.Remove(LocationID);
+        }
+    }
+
+    // Players
+    const TArray<TSharedPtr<FJsonValue>>* PlayersArray = nullptr;
+
+    if (JsonObject->TryGetArrayField(TEXT("players"), PlayersArray) && PlayersArray)
+    {
+        Players.Empty();
+
+        for (const TSharedPtr<FJsonValue>& Value : *PlayersArray)
+        {
+            if (!Value.IsValid() || Value->Type != EJson::Object)
+                continue;
+
+            const TSharedPtr<FJsonObject> PlayerObject = Value->AsObject();
+
+            if (!PlayerObject.IsValid())
+                continue;
+
+            FAPPlayer Player;
+
+            PlayerObject->TryGetNumberField(TEXT("team"), Player.Team);
+            PlayerObject->TryGetNumberField(TEXT("slot"), Player.Slot);
+            PlayerObject->TryGetStringField(TEXT("alias"), Player.Alias);
+            PlayerObject->TryGetStringField(TEXT("name"), Player.Name);
+            PlayerObject->TryGetStringField(TEXT("class"), Player.PlayerClass);
+
+            Players.Add(MoveTemp(Player));
+        }
+    }
+
+    UE_LOG(LogArchipelago, Log, TEXT("RoomUpdate processed. Hint Points: %d | Players: %d | Checked Locations: %d"), HintPoints, Players.Num(), CheckedLocations.Num());
+    
+    FAPRoomUpdate Update;
+    Update.HintPoints = HintPoints;
+
+    for (const int64 LocationID : CheckedLocations)
+    {
+        FAPCheckedLocation Location;
+        Location.ID = LocationID;
+
+        if (const FAPGameData* LocalGameData = GameData.Find(GameName))
+        {
+            if (const FString* LocationName = LocalGameData->LocationNames.Find(LocationID))
+            {
+                Location.Name = *LocationName;
+            }
+        }
+
+        Update.CheckedLocations.Add(MoveTemp(Location));
+    }
+
+    OnRoomUpdated.Broadcast(Update);
 }
 
 void UArchipelagoSubsystem::ParseVersion(const TSharedPtr<FJsonObject>& JsonObject, FAPVersion& OutVersion)
@@ -1328,6 +1667,48 @@ void UArchipelagoSubsystem::RequestSync()
     ArchipelagoWebSocket->SendMessage(JsonString);
 }
 
+bool UArchipelagoSubsystem::SendChatMessage(const FString& Message)
+{
+    if (!IsValid(ArchipelagoWebSocket))
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Cannot send chat message: WebSocket doesn't exist."));
+        return false;
+    }
+
+    if (!ArchipelagoWebSocket->IsConnected())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Cannot send chat message: WebSocket is not connected."));
+        return false;
+    }
+
+    if (Message.TrimStartAndEnd().IsEmpty())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Cannot send chat message: Message is empty."));
+        return false;
+    }
+
+    TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
+
+    JsonObject->SetStringField(TEXT("cmd"), TEXT("Say"));
+    JsonObject->SetStringField(TEXT("text"), Message);
+
+    TArray<TSharedPtr<FJsonValue>> JsonArray;
+    JsonArray.Add(MakeShared<FJsonValueObject>(JsonObject));
+
+    FString OutputString;
+    const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
+
+    if (!FJsonSerializer::Serialize(JsonArray, Writer))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to serialize Say request."));
+        return false;
+    }
+
+    ArchipelagoWebSocket->SendMessage(OutputString);
+
+    UE_LOG(LogArchipelago, Log, TEXT("Sent chat message: %s"), *Message);
+    return true;
+}
 
 FAPResolvedNetworkItem UArchipelagoSubsystem::ResolveNetworkItem(const FAPNetworkItem& NetworkItem) const
 {
@@ -1360,11 +1741,14 @@ FAPResolvedNetworkItem UArchipelagoSubsystem::ResolveNetworkItem(const FAPNetwor
 
         if (LocationOwner)
         {
-            // Resolve the correct game's DataPackage.
-            LocationGameData = GameData.Find(LocationOwner->PlayerClass);
+            // Resolve the sender's game through SlotInfo.
+            if (const FAPSlotInfo* OwnerSlotInfo = SlotInfo.Find(LocationOwner->Slot))
+            {
+                LocationGameData = GameData.Find(OwnerSlotInfo->Game);
+            }
 
             // Resolve player name.
-            Result.PlayerName = LocationOwner->Alias;
+            Result.PlayerName = !LocationOwner->Alias.IsEmpty() ? LocationOwner->Alias : LocationOwner->Name;
             Result.bPlayerNameFound = true;
         }
     }

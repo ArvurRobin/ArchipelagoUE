@@ -313,4 +313,28 @@ struct FAPMessageTypeColorPalette
     FLinearColor HintColor = FLinearColor(1.0f, 0.6f, 0.2f);
 };
 
+USTRUCT(BlueprintType)
+struct FAPCheckedLocation
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Room")
+    int64 ID = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Room")
+    FString Name;
+};
+
+USTRUCT(BlueprintType)
+struct FAPRoomUpdate
+{
+    GENERATED_BODY()
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Room")
+    int32 HintPoints = 0;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Archipelago|Room")
+    TArray<FAPCheckedLocation> CheckedLocations;
+};
+
 #pragma endregion

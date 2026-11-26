@@ -16,6 +16,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAPConnectionClosed,int32, Status
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPConnectionError, const FString&, Error);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPPrintJSON, const FAPPrintJSONMessage&, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPReceivedItems, const TArray<FAPResolvedNetworkItem>&, ReceivedItems);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPLocationInfoReceived, const TArray<FAPResolvedNetworkItem>&, LocationInfo);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPRoomUpdated, const FAPRoomUpdate&, RoomUpdate);
 
 UCLASS()
 class ARCHIPELAGOUE_API UArchipelagoSubsystem : public UGameInstanceSubsystem
@@ -46,6 +48,12 @@ public:
 
     UPROPERTY(BlueprintAssignable, Category = "Archipelago|Events")
     FOnAPReceivedItems OnReceivedItems;
+
+    UPROPERTY(BlueprintAssignable, Category = "Archipelago|Events")
+    FOnAPLocationInfoReceived OnReceivedLocationInfo;
+
+    UPROPERTY(BlueprintAssignable, Category = "Archipelago|Events")
+    FOnAPRoomUpdated OnRoomUpdated;
 
 #pragma region Config
 
@@ -140,6 +148,12 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Archipelago")
     bool SendLocationChecks(const TArray<int64>& LocationIds);
 
+    UFUNCTION(BlueprintCallable, Category = "Archipelago")
+    bool RequestLocationScout(int64 LocationId);
+
+    UFUNCTION(BlueprintCallable, Category = "Archipelago")
+    bool RequestLocationScouts(const TArray<int64>& LocationIds);
+
 private:
 
     UPROPERTY()
@@ -201,6 +215,8 @@ private:
     void HandleReceivedItems(const TSharedPtr<FJsonObject>& JsonObject);
     void HandlePrintJSON(const TSharedPtr<FJsonObject>& JsonObject);
     void HandleDataPackage(const TSharedPtr<FJsonObject>& JsonObject);
+    void HandleLocationInfo(const TSharedPtr<FJsonObject>& JsonObject);
+    void HandleRoomUpdate(const TSharedPtr<FJsonObject>& JsonObject);
 
     // Parser for Version JSON
     void ParseVersion(const TSharedPtr<FJsonObject>& JsonObject, FAPVersion& OutVersion);
@@ -213,6 +229,9 @@ private:
 
     void RequestDataPackage(const TArray<FString>& GameNames);
     void RequestSync();
+
+    UFUNCTION(BlueprintCallable, Category = "Archipelago|Chat")
+    bool SendChatMessage(const FString& Message);
 
     UFUNCTION(BlueprintPure, Category = "Archipelago|Items")
     FAPResolvedNetworkItem ResolveNetworkItem(const FAPNetworkItem& NetworkItem) const;
