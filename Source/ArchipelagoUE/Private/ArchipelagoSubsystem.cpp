@@ -65,36 +65,54 @@ void UArchipelagoSubsystem::Initialize(FSubsystemCollectionBase& Collection)
         UE_LOG(LogArchipelago, Error, TEXT("Could not read configuration file."));
         break;
 
+    case EAPConfigLoadResult::JsonParsingFailed:
     case EAPConfigLoadResult::JsonConversionFailed:
-        UE_LOG(LogArchipelago, Error, TEXT("JSON configuration conversion failed."));
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to parse or convert the JSON configuration."));
         break;
 
     default:
-        UE_LOG(LogArchipelago, Fatal, TEXT("Unknown error loading configuration!"));
+        UE_LOG(LogArchipelago, Error, TEXT("Unknown error loading configuration."));
         break;
     }
 
-    // Init WebSocket
     const EAPWebSocketInitResult InitResult = InitWebSocket();
 
-    if (InitResult == EAPWebSocketInitResult::Success ||
-        InitResult == EAPWebSocketInitResult::AlreadyInitialized)
+    if (InitResult != EAPWebSocketInitResult::Success &&
+        InitResult != EAPWebSocketInitResult::AlreadyInitialized)
     {
-        UWebSocketsSubsystem* WebSocketsSubsystem =
-            GetGameInstance()->GetSubsystem<UWebSocketsSubsystem>();
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to initialize the Archipelago WebSocket. Result: %d"), static_cast<int32>(InitResult));
+        return;
+    }
 
-        if (IsValid(WebSocketsSubsystem))
-        {
-            ArchipelagoWebSocket =
-                WebSocketsSubsystem->GetWebSocket(GetWebSocketName());
-        }
+    UGameInstance* GameInstance = GetGameInstance();
 
-        SetupWebSocketDelegates();
+    if (!IsValid(GameInstance))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("GameInstance is not accessible."));
+        return;
+    }
 
-        if (GetConfig().AutoConnectOnStartup)
-        {
-            ConnectWebSocket();
-        }
+    UWebSocketsSubsystem* WebSocketsSubsystem = GameInstance->GetSubsystem<UWebSocketsSubsystem>();
+
+    if (!IsValid(WebSocketsSubsystem))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("WebSocketsSubsystem is not accessible."));
+        return;
+    }
+
+    ArchipelagoWebSocket = WebSocketsSubsystem->GetWebSocket(GetWebSocketName());
+
+    if (!IsValid(ArchipelagoWebSocket))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to retrieve the Archipelago WebSocket."));
+        return;
+    }
+
+    SetupWebSocketDelegates();
+
+    if (GetConfig().AutoConnectOnStartup)
+    {
+        ConnectWebSocket();
     }
 }
 
@@ -268,14 +286,20 @@ FName UArchipelagoSubsystem::GetWebSocketName()
 
 EAPWebSocketInitResult UArchipelagoSubsystem::InitWebSocket()
 {
-    // Get WebSockets Subsystem
-    UWebSocketsSubsystem* WebSocketsSubsystem = GetGameInstance()->GetSubsystem<UWebSocketsSubsystem>();
+    UGameInstance* GameInstance = GetGameInstance();
+
+    if (!IsValid(GameInstance))
+    {
+        return EAPWebSocketInitResult::SubsystemNotAccessible;
+    }
+
+    UWebSocketsSubsystem* WebSocketsSubsystem = GameInstance->GetSubsystem<UWebSocketsSubsystem>();
+
     if (!IsValid(WebSocketsSubsystem))
     {
         return EAPWebSocketInitResult::SubsystemNotAccessible;
     }
 
-    // Check if WebSocket is already initialized
     if (IsValid(WebSocketsSubsystem->GetWebSocket(GetWebSocketName())))
     {
         return EAPWebSocketInitResult::AlreadyInitialized;
@@ -284,42 +308,27 @@ EAPWebSocketInitResult UArchipelagoSubsystem::InitWebSocket()
     FString ServerUrl = GetConfig().ServerUrl;
     const int32 ServerPort = GetConfig().ServerPort;
 
-    // Check if URL is empty
     if (ServerUrl.IsEmpty())
     {
         return EAPWebSocketInitResult::InvalidURL;
     }
 
-    // Ensure the URL has a WebSocket protocol.
-    // Default to secure WebSocket (WSS) if no protocol is specified.
     if (!ServerUrl.StartsWith(TEXT("ws://"), ESearchCase::IgnoreCase) &&
         !ServerUrl.StartsWith(TEXT("wss://"), ESearchCase::IgnoreCase))
     {
         ServerUrl.InsertAt(0, TEXT("wss://"));
     }
 
-    // Check port
     if (ServerPort <= 0 || ServerPort > 65535)
     {
         return EAPWebSocketInitResult::InvalidPort;
     }
 
-    // Combine server URL and port
-    const FString ServerAndPort = FString::Printf(
-        TEXT("%s:%d"),
-        *ServerUrl,
-        ServerPort
-    );
+    const FString ServerAndPort = FString::Printf(TEXT("%s:%d"), *ServerUrl, ServerPort);
 
-    UE_LOG(
-        LogArchipelago,
-        Warning,
-        TEXT(">>> TARGET URL: %s <<<"),
-        *ServerAndPort
-    );
+    UE_LOG(LogArchipelago, Log, TEXT("Initializing WebSocket for: %s"), *ServerAndPort);
 
-    // Create WebSocket
-    UWebSocket* WebSocket;
+    UWebSocket* WebSocket = nullptr;
     FString OutMessage;
 
     const bool bSuccess = WebSocketsSubsystem->CreateWebSocket(
@@ -331,8 +340,7 @@ EAPWebSocketInitResult UArchipelagoSubsystem::InitWebSocket()
 
     if (!bSuccess || !IsValid(WebSocket))
     {
-        // Handle creation failure
-        WebSocket = nullptr;
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to create WebSocket: %s"), *OutMessage);
         return EAPWebSocketInitResult::CreationFailed;
     }
 
@@ -341,8 +349,14 @@ EAPWebSocketInitResult UArchipelagoSubsystem::InitWebSocket()
 
 EAPWebSocketConnectionResult UArchipelagoSubsystem::ConnectWebSocket()
 {
-    UWebSocketsSubsystem* WebSocketsSubsystem =
-        GetGameInstance()->GetSubsystem<UWebSocketsSubsystem>();
+    UGameInstance* GameInstance = GetGameInstance();
+
+    if (!IsValid(GameInstance))
+    {
+        return EAPWebSocketConnectionResult::SubsystemNotAccessible;
+    }
+
+    UWebSocketsSubsystem* WebSocketsSubsystem = GameInstance->GetSubsystem<UWebSocketsSubsystem>();
 
     if (!IsValid(WebSocketsSubsystem))
     {
@@ -362,6 +376,11 @@ EAPWebSocketConnectionResult UArchipelagoSubsystem::ConnectWebSocket()
         return EAPWebSocketConnectionResult::WebSocketNotInitialized;
     }
 
+    if (ArchipelagoWebSocket->IsConnected())
+    {
+        return EAPWebSocketConnectionResult::AlreadyConnected;
+    }
+
     UE_LOG(LogArchipelago, Log, TEXT("Attempting WebSocket connection..."));
 
     ArchipelagoWebSocket->Connect();
@@ -369,19 +388,25 @@ EAPWebSocketConnectionResult UArchipelagoSubsystem::ConnectWebSocket()
 
     UE_LOG(LogArchipelago, Log, TEXT("WebSocket connection request submitted."));
 
-    return EAPWebSocketConnectionResult::Success;
+    return EAPWebSocketConnectionResult::ConnectionStarted;
 }
 
 EAPWebSocketDestroyResult UArchipelagoSubsystem::DestroyWebSocket()
 {
-    // Get WebSockets Subsystem
-    UWebSocketsSubsystem* WebSocketsSubsystem = GetGameInstance()->GetSubsystem<UWebSocketsSubsystem>();
+    UGameInstance* GameInstance = GetGameInstance();
+
+    if (!IsValid(GameInstance))
+    {
+        return EAPWebSocketDestroyResult::SubsystemNotAccessible;
+    }
+
+    UWebSocketsSubsystem* WebSocketsSubsystem = GameInstance->GetSubsystem<UWebSocketsSubsystem>();
+
     if (!IsValid(WebSocketsSubsystem))
     {
         return EAPWebSocketDestroyResult::SubsystemNotAccessible;
     }
 
-    // Is WebSocket initialized?
     if (!IsValid(ArchipelagoWebSocket))
     {
         return EAPWebSocketDestroyResult::WebSocketNotFound;
@@ -389,13 +414,15 @@ EAPWebSocketDestroyResult UArchipelagoSubsystem::DestroyWebSocket()
 
     FString DestroyMessage;
 
-    if (WebSocketsSubsystem->DestroyWebSocket(GetWebSocketName(), DestroyMessage))
+    if (!WebSocketsSubsystem->DestroyWebSocket(GetWebSocketName(), DestroyMessage))
     {
-        ArchipelagoWebSocket = nullptr;
-        return EAPWebSocketDestroyResult::Success;
+        UE_LOG(LogArchipelago, Warning, TEXT("Failed to destroy Archipelago WebSocket: %s"), *DestroyMessage);
+        return EAPWebSocketDestroyResult::WebSocketNotDestroyed;
     }
 
-    return EAPWebSocketDestroyResult::WebSocketNotDestroyed;
+    ArchipelagoWebSocket = nullptr;
+
+    return EAPWebSocketDestroyResult::Success;
 }
 
 void UArchipelagoSubsystem::SetupWebSocketDelegates()
@@ -473,11 +500,11 @@ TArray<FAPNetworkItem> UArchipelagoSubsystem::GetReceivedItems() const
     return ReceivedItems;
 }
 
-void UArchipelagoSubsystem::SetupArchipelago(const FString& gameName, const FAPMessageTypeColorPalette& colorPalette)
+void UArchipelagoSubsystem::SetupArchipelago(const FString& InGameName, const FAPMessageTypeColorPalette& InColorPalette)
 {
     UUID = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
-    GameName = gameName;
-    ColorPalette = colorPalette;
+    this->GameName = InGameName;
+    this->ColorPalette = InColorPalette;
 }
 
 FLinearColor UArchipelagoSubsystem::GetPrintJSONColor(const FString& Type) const
@@ -517,6 +544,12 @@ bool UArchipelagoSubsystem::SendLocationCheck(int64 LocationId)
 
 bool UArchipelagoSubsystem::SendLocationChecks(const TArray<int64>& LocationIds)
 {
+    if (!IsValid(ArchipelagoWebSocket))
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Cannot send LocationChecks: WebSocket doesn't exist."));
+        return false;
+    }
+
     if (!ArchipelagoWebSocket->IsConnected())
     {
         UE_LOG(LogArchipelago, Warning, TEXT("Cannot send LocationChecks: WebSocket is not connected."));
@@ -552,7 +585,12 @@ bool UArchipelagoSubsystem::SendLocationChecks(const TArray<int64>& LocationIds)
 
     FString OutputString;
     const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputString);
-    FJsonSerializer::Serialize(RootArray, Writer);
+
+    if (!FJsonSerializer::Serialize(RootArray, Writer))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to serialize LocationChecks request."));
+        return false;
+    }
 
     ArchipelagoWebSocket->SendMessage(OutputString);
 
@@ -900,7 +938,7 @@ void UArchipelagoSubsystem::HandleRoomInfo(const TSharedPtr<FJsonObject>& JsonOb
         }
     }
 
-    UE_LOG(LogArchipelago,Log,TEXT("RoomInfo processed successfully. Games: %d | Tags: %d | Seed: %s"), RoomInfo.Games.Num(), RoomInfo.Tags.Num(), *RoomInfo.SeedName);
+    UE_LOG(LogArchipelago, Log, TEXT("RoomInfo processed successfully. Games: %d | Tags: %d | Seed: %s"), RoomInfo.Games.Num(), RoomInfo.Tags.Num(), *RoomInfo.SeedName);
 
     // Send Archipelago authentication
     SendConnectPacket();
@@ -1625,7 +1663,7 @@ void UArchipelagoSubsystem::HandleRoomUpdate(const TSharedPtr<FJsonObject>& Json
     }
 
     UE_LOG(LogArchipelago, Log, TEXT("RoomUpdate processed. Hint Points: %d | Players: %d | Checked Locations: %d"), HintPoints, Players.Num(), CheckedLocations.Num());
-    
+
     FAPRoomUpdate Update;
     Update.HintPoints = HintPoints;
 
@@ -1697,7 +1735,7 @@ void UArchipelagoSubsystem::ParseVersion(const TSharedPtr<FJsonObject>& JsonObje
     OutVersion.Build = Build;
 }
 
-FAPPrintJSONSegment UArchipelagoSubsystem::ParsePrintJSONSegment(const FAPPrintJSONSegment Segment, int32 PlayerID)
+FAPPrintJSONSegment UArchipelagoSubsystem::ParsePrintJSONSegment(const FAPPrintJSONSegment& Segment, int32 PlayerID)
 {
     FAPPrintJSONSegment Out = Segment;
 
@@ -1840,6 +1878,12 @@ void UArchipelagoSubsystem::SendConnectPacket()
 
 void UArchipelagoSubsystem::RequestDataPackage(const TArray<FString>& GameNames)
 {
+    if (!IsValid(ArchipelagoWebSocket) || !ArchipelagoWebSocket->IsConnected())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Cannot request DataPackage: WebSocket is not connected."));
+        return;
+    }
+
     TSharedPtr<FJsonObject> RequestObject = MakeShared<FJsonObject>();
 
     RequestObject->SetStringField(TEXT("cmd"), TEXT("GetDataPackage"));
@@ -1848,7 +1892,16 @@ void UArchipelagoSubsystem::RequestDataPackage(const TArray<FString>& GameNames)
 
     for (const FString& Game : GameNames)
     {
-        GamesArray.Add(MakeShared<FJsonValueString>(Game));
+        if (!Game.IsEmpty())
+        {
+            GamesArray.Add(MakeShared<FJsonValueString>(Game));
+        }
+    }
+
+    if (GamesArray.IsEmpty())
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("DataPackage request skipped: No game names were provided."));
+        return;
     }
 
     RequestObject->SetArrayField(TEXT("games"), GamesArray);
@@ -1857,9 +1910,13 @@ void UArchipelagoSubsystem::RequestDataPackage(const TArray<FString>& GameNames)
     Packets.Add(MakeShared<FJsonValueObject>(RequestObject));
 
     FString Output;
-    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output);
+    const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output);
 
-    FJsonSerializer::Serialize(Packets, Writer);
+    if (!FJsonSerializer::Serialize(Packets, Writer))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to serialize DataPackage request."));
+        return;
+    }
 
     ArchipelagoWebSocket->SendMessage(Output);
 }
@@ -1946,7 +2003,7 @@ FAPResolvedNetworkItem UArchipelagoSubsystem::ResolveNetworkItem(const FAPNetwor
 
             // Resolve player name.
             Result.PlayerName = !LocationOwner->Alias.IsEmpty() ? LocationOwner->Alias : LocationOwner->Name;
-            Result.bPlayerNameFound = true;
+            Result.bPlayerNameFound = !Result.PlayerName.IsEmpty();
         }
     }
 
@@ -1998,4 +2055,3 @@ FAPResolvedNetworkItem UArchipelagoSubsystem::ResolveNetworkItem(const FAPNetwor
 
     return Result;
 }
-
