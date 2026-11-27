@@ -66,7 +66,6 @@ struct FAPConfig
 
 #pragma endregion
 
-
 #pragma region Protocol
 
 USTRUCT(BlueprintType, meta = (ToolTip = "Represents an Archipelago protocol version, including its major, minor and build numbers."))

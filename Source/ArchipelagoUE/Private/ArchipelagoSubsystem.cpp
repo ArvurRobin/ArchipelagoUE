@@ -4,11 +4,12 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/Base64.h"
+#include "Misc/DateTime.h"
 #include "JsonObjectConverter.h"
-#include "WebSocketsGameInstanceSubsystem.h"
-#include "WebSocket.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
+#include "WebSocketsGameInstanceSubsystem.h"
+#include "WebSocket.h"
 #include "Engine/GameInstance.h"
 
 void UArchipelagoSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -464,6 +465,11 @@ FAPRoomInfo UArchipelagoSubsystem::GetRoomInfo() const
 TArray<FAPNetworkItem> UArchipelagoSubsystem::GetReceivedItems() const
 {
     return ReceivedItems;
+}
+
+FDateTime UArchipelagoSubsystem::GetLastSaveTimestamp() const
+{
+    return LastProgressSaveTime;
 }
 
 void UArchipelagoSubsystem::SetupArchipelago(const FString& InGameName, const FAPMessageTypeColorPalette& InColorPalette)
@@ -1149,6 +1155,9 @@ void UArchipelagoSubsystem::HandleReceivedItems(const TSharedPtr<FJsonObject>& J
         {
             // Initial item history: everything is new.
             NewItems = IncomingItems;
+
+            // Clear temporary application state.
+            PendingItems.Reset();
         }
         else
         {
@@ -1185,6 +1194,10 @@ void UArchipelagoSubsystem::HandleReceivedItems(const TSharedPtr<FJsonObject>& J
             else
             {
                 UE_LOG(LogArchipelago, Warning, TEXT("ReceivedItems history differs from local history. Replacing local history without rebroadcasting old items."));
+
+                // Clear temporary application state because
+                // the delivery indices may have changed.
+                PendingItems.Reset();
             }
         }
 
@@ -1993,19 +2006,6 @@ FAPResolvedNetworkItem UArchipelagoSubsystem::ResolveNetworkItem(const FAPNetwor
         }
     }
 
-    // Resolve item and location names.
-    /*
-    if (LocationGameData)
-    {
-        if (const FString* ItemName =
-            LocationGameData->ItemNames.Find(NetworkItem.Item))
-        {
-            Result.ItemName = *ItemName;
-            Result.bItemNameFound = true;
-        }
-    }
-    */
-
     // Decode item classifications.
     if ((NetworkItem.Flags & 1) != 0)
         Result.Classifications.Add(EAPItemClassification::Advancement);
@@ -2020,4 +2020,262 @@ FAPResolvedNetworkItem UArchipelagoSubsystem::ResolveNetworkItem(const FAPNetwor
         Result.Classifications.Add(EAPItemClassification::Trap);
 
     return Result;
+}
+
+void UArchipelagoSubsystem::ApplyItem(int64 ItemID)
+{
+    for (int32 ItemIndex = 0; ItemIndex < ReceivedItems.Num(); ++ItemIndex)
+    {
+        if (ReceivedItems[ItemIndex].Item != ItemID)
+            continue;
+
+        if (AppliedItems.Contains(ItemIndex) || PendingItems.Contains(ItemIndex))
+            continue;
+
+        if (!ReceivedItemsResolved.IsValidIndex(ItemIndex))
+        {
+            UE_LOG(LogArchipelago, Warning, TEXT("Cannot apply item: No resolved data available for delivery at index %d."), ItemIndex);
+            return;
+        }
+
+        PendingItems.Add(ItemIndex);
+
+        OnApplyItem.Broadcast(ItemIndex, ReceivedItemsResolved[ItemIndex]);
+        return;
+    }
+
+    UE_LOG(LogArchipelago, Warning, TEXT("Cannot apply item: No unapplied delivery found for Item ID %lld."), ItemID);
+}
+
+void UArchipelagoSubsystem::MarkItemAsApplied(int32 ItemIndex)
+{
+    if (!ReceivedItems.IsValidIndex(ItemIndex))
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Cannot mark item as applied: Invalid item index %d."), ItemIndex);
+        return;
+    }
+
+    if (AppliedItems.Contains(ItemIndex))
+        return;
+
+    PendingItems.Remove(ItemIndex);
+    AppliedItems.Add(ItemIndex);
+
+    UE_LOG(LogArchipelago, Log, TEXT("Marked item at index %d as applied."), ItemIndex);
+}
+
+bool UArchipelagoSubsystem::SaveArchipelagoSave(const FString& OriginalSavePath)
+{
+    if (OriginalSavePath.IsEmpty())
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Cannot save Archipelago data: Original save path is empty."));
+        return false;
+    }
+
+    if (!FPaths::FileExists(OriginalSavePath))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Cannot save Archipelago data: Original save file does not exist: %s"), *OriginalSavePath);
+        return false;
+    }
+
+    TSharedPtr<FJsonObject> JsonObject = MakeShared<FJsonObject>();
+
+    // Save format version and timestamp.
+    JsonObject->SetNumberField(TEXT("FormatVersion"), 1);
+    JsonObject->SetStringField(TEXT("Timestamp"), FDateTime::UtcNow().ToIso8601());
+
+    // Save only the item IDs, preserving order and duplicates.
+    TArray<TSharedPtr<FJsonValue>> ReceivedItemsArray;
+
+    for (const FAPNetworkItem& Item : ReceivedItems)
+    {
+        ReceivedItemsArray.Add(MakeShared<FJsonValueNumber>(static_cast<double>(Item.Item)));
+    }
+
+    JsonObject->SetArrayField(TEXT("ReceivedItems"), ReceivedItemsArray);
+
+    // Save indices of items already applied to the game.
+    TArray<TSharedPtr<FJsonValue>> AppliedItemsArray;
+
+    for (const int32 ItemIndex : AppliedItems)
+    {
+        AppliedItemsArray.Add(MakeShared<FJsonValueNumber>(ItemIndex));
+    }
+
+    JsonObject->SetArrayField(TEXT("AppliedItems"), AppliedItemsArray);
+
+    // Convert JSON object to string.
+    FString OutputJson;
+
+    const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutputJson);
+
+    if (!FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to serialize Archipelago progress JSON."));
+        return false;
+    }
+
+    // Write the .apsave file.
+    const FString SavePath = FPaths::ChangeExtension(OriginalSavePath, TEXT("apsave"));
+
+    if (!FFileHelper::SaveStringToFile(OutputJson, *SavePath))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to write Archipelago progress file: %s"), *SavePath);
+        return false;
+    }
+
+    UE_LOG(LogArchipelago, Log, TEXT("Successfully saved Archipelago progress: %s"), *SavePath);
+
+    return true;
+}
+
+bool UArchipelagoSubsystem::LoadArchipelagoSave(const FString& OriginalSavePath)
+{
+    if (OriginalSavePath.IsEmpty())
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Cannot load Archipelago progress: Original save path is empty."));
+        return false;
+    }
+
+    if (!FPaths::FileExists(OriginalSavePath))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Cannot load Archipelago progress: Original save file does not exist: %s"), *OriginalSavePath);
+        return false;
+    }
+
+    const FString ArchipelagoSavePath = FPaths::ChangeExtension(OriginalSavePath, TEXT("apsave"));
+
+    // No existing Archipelago save: start with fresh progress.
+    if (!FPaths::FileExists(ArchipelagoSavePath))
+    {
+        UE_LOG(LogArchipelago, Log, TEXT("No Archipelago progress file found. Starting with fresh progress."));
+
+        ReceivedItems.Reset();
+        AppliedItems.Reset();
+        PendingItems.Reset();
+        ReceivedItemsResolved.Reset();
+        ReceivedItemsIndex = 0;
+        LastProgressSaveTime = FDateTime();
+
+        return true;
+    }
+
+    // Read the JSON file.
+    FString JsonString;
+
+    if (!FFileHelper::LoadFileToString(JsonString, *ArchipelagoSavePath))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Failed to read Archipelago progress file: %s"), *ArchipelagoSavePath);
+        return false;
+    }
+
+    TSharedPtr<FJsonObject> JsonObject;
+    const TSharedRef<TJsonReader<>> Reader =
+        TJsonReaderFactory<>::Create(JsonString);
+
+    if (!FJsonSerializer::Deserialize(Reader, JsonObject) || !JsonObject.IsValid())
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Invalid Archipelago progress JSON: %s"), *ArchipelagoSavePath);
+        return false;
+    }
+
+    // Validate the file format version.
+    int32 FormatVersion = 0;
+
+    if (!JsonObject->TryGetNumberField(TEXT("FormatVersion"), FormatVersion) || FormatVersion != 1)
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Unsupported or missing Archipelago progress format version."));
+        return false;
+    }
+
+    // Read the timestamp.
+    FString TimestampString;
+
+    if (!JsonObject->TryGetStringField(TEXT("Timestamp"), TimestampString))
+    {
+        UE_LOG(LogArchipelago, Warning, TEXT("Archipelago progress file has no timestamp."));
+        LastProgressSaveTime = FDateTime();
+    }
+    else
+    {
+        FDateTime ParsedTimestamp;
+
+        if (FDateTime::ParseIso8601(*TimestampString, ParsedTimestamp))
+        {
+            LastProgressSaveTime = ParsedTimestamp;
+        }
+        else
+        {
+            UE_LOG(LogArchipelago, Warning, TEXT("Invalid timestamp in Archipelago progress file: %s"), *TimestampString);
+            LastProgressSaveTime = FDateTime();
+        }
+    }
+
+    // Read received item IDs.
+    const TArray<TSharedPtr<FJsonValue>>* ReceivedItemsArray = nullptr;
+
+    if (!JsonObject->TryGetArrayField(TEXT("ReceivedItems"), ReceivedItemsArray))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Archipelago progress file is missing ReceivedItems."));
+        return false;
+    }
+
+    TArray<FAPNetworkItem> LoadedReceivedItems;
+
+    for (const TSharedPtr<FJsonValue>& ItemValue : *ReceivedItemsArray)
+    {
+        if (!ItemValue.IsValid() || ItemValue->Type != EJson::Number)
+        {
+            UE_LOG(LogArchipelago, Error, TEXT("Invalid entry in ReceivedItems."));
+            return false;
+        }
+
+        const int64 ItemID = static_cast<int64>(ItemValue->AsNumber());
+
+        FAPNetworkItem Item;
+        Item.Item = ItemID;
+
+        LoadedReceivedItems.Add(Item);
+    }
+
+    // Read applied item indices.
+    const TArray<TSharedPtr<FJsonValue>>* AppliedItemsArray = nullptr;
+
+    if (!JsonObject->TryGetArrayField(TEXT("AppliedItems"), AppliedItemsArray))
+    {
+        UE_LOG(LogArchipelago, Error, TEXT("Archipelago progress file is missing AppliedItems."));
+        return false;
+    }
+
+    TSet<int32> LoadedAppliedItems;
+
+    for (const TSharedPtr<FJsonValue>& IndexValue : *AppliedItemsArray)
+    {
+        if (!IndexValue.IsValid() || IndexValue->Type != EJson::Number)
+        {
+            UE_LOG(LogArchipelago, Error, TEXT("Invalid entry in AppliedItems."));
+            return false;
+        }
+
+        const int32 ItemIndex = static_cast<int32>(IndexValue->AsNumber());
+
+        if (!LoadedReceivedItems.IsValidIndex(ItemIndex))
+        {
+            UE_LOG(LogArchipelago, Warning, TEXT("Ignoring invalid applied item index: %d"), ItemIndex);
+            continue;
+        }
+
+        LoadedAppliedItems.Add(ItemIndex);
+    }
+
+    // Apply loaded progress only after successful parsing.
+    ReceivedItems = MoveTemp(LoadedReceivedItems);
+    AppliedItems = MoveTemp(LoadedAppliedItems);
+    PendingItems.Reset();
+    ReceivedItemsResolved.Reset();
+    ReceivedItemsIndex = ReceivedItems.Num();
+
+    UE_LOG(LogArchipelago, Log, TEXT("Successfully loaded Archipelago progress: %d received items, %d applied items."), ReceivedItems.Num(), AppliedItems.Num());
+
+    return true;
 }

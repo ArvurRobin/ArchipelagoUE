@@ -21,6 +21,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPLocationInfoReceived, const TAr
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPRoomUpdated, const FAPRoomUpdate&, RoomUpdate);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPPrintReceived, const FString&, Message);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnAPInvalidPacketReceived, const FAPInvalidPacket&, InvalidPacket);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAPApplyItem, int32, ItemIndex, FAPResolvedNetworkItem, Item);
 
 UCLASS()
 class ARCHIPELAGOUE_API UArchipelagoSubsystem : public UGameInstanceSubsystem
@@ -74,8 +75,11 @@ public:
         meta = (ToolTip = "Broadcast when the Archipelago server reports an invalid packet."))
     FOnAPInvalidPacketReceived OnInvalidPacketReceived;
 
-#pragma endregion
+    UPROPERTY(BlueprintAssignable, Category = "Archipelago|Items",
+        meta = (ToolTip = "Broadcast when an item is requested to be applied."))
+    FOnAPApplyItem OnApplyItem;
 
+#pragma endregion
 
 #pragma region Config
 
@@ -134,7 +138,6 @@ private:
     static FString DecodePassword(const FString& EncodedPassword);
 
 #pragma endregion
-
 
 #pragma region WebSocket Connection
 
@@ -206,6 +209,10 @@ public:
         meta = (ToolTip = "Returns the complete history of network items received by this client."))
     TArray<FAPNetworkItem> GetReceivedItems() const;
 
+    UFUNCTION(BlueprintPure, Category = "Archipelago|Save",
+        meta = (ToolTip = "Returns the Timestamp of the last Archipelago Progress Save."))
+    FDateTime GetLastSaveTimestamp() const;
+
     UFUNCTION(BlueprintCallable, Category = "Archipelago")
     void SetupArchipelago(
         UPARAM(DisplayName = "Game Name") const FString& InGameName,
@@ -248,8 +255,40 @@ public:
         meta = (ToolTip = "Resolves a network item into its display names and item classifications using the available game data."))
     FAPResolvedNetworkItem ResolveNetworkItem(const FAPNetworkItem& NetworkItem) const;
 
-#pragma endregion
+    UFUNCTION(BlueprintCallable, Category = "Archipelago|Items",
+        meta = (ToolTip = "Requests application of the first unapplied delivery matching the specified item ID."))
+    void ApplyItem(
+        UPARAM(meta = (ToolTip = "The ID of the item to apply.")) int64 ItemID
+    );
 
+    // Marks a received item as successfully applied and records it for persistence.
+    UFUNCTION(BlueprintCallable, Category = "Archipelago|Items",
+        meta = (ToolTip = "Marks a received item as successfully applied and records it in the Archipelago progress save."))
+    void MarkItemAsApplied(
+        UPARAM(meta = (ToolTip = "Index of the successfully applied item in the ReceivedItems array.")) int32 ItemIndex
+    );
+
+    UFUNCTION(BlueprintCallable, Category = "Archipelago|Save",
+        meta = (
+            DisplayName = "Save Archipelago Save",
+            ToolTip = "Saves the current Archipelago progress to a separate .apsave file alongside the specified original game save file."
+            ))
+    bool SaveArchipelagoSave(
+        UPARAM(DisplayName = "Original Save Path")
+        const FString& OriginalSavePath
+    );
+
+    UFUNCTION(BlueprintCallable, Category = "Archipelago|Save",
+        meta = (
+            DisplayName = "Load Archipelago Save",
+            ToolTip = "Loads the Archipelago progress associated with the specified original game save file. Creates a new Archipelago save file if none exists."
+            ))
+    bool LoadArchipelagoSave(
+        UPARAM(DisplayName = "Original Save Path")
+        const FString& OriginalSavePath
+    );
+
+#pragma endregion
 
 #pragma region Internal State
 
@@ -307,6 +346,9 @@ private:
     UPROPERTY(Transient, meta = (ToolTip = "The current item history index used when synchronizing received items with the server."))
     int32 ReceivedItemsIndex = 0;
 
+    // The actually applied Items (Received from Archipelago Server but also applied in this Save/Progress)
+    TSet<int32> AppliedItems;
+
     // The slot data received from the Archipelago server.
     TSharedPtr<FJsonObject> SlotData;
 
@@ -316,8 +358,13 @@ private:
     // Game data indexed by game name, including item and location names.
     TMap<FString, FAPGameData> GameData;
 
-#pragma endregion
+    // Timestamp of the last Progress Save
+    FDateTime LastProgressSaveTime;
 
+    // Items marked for apply but not yet applied
+    TSet<int32> PendingItems;
+
+#pragma endregion
 
 #pragma region Internal Message Processing
 
