@@ -136,48 +136,14 @@ bool UArchipelagoSubsystem::OverrideConfig(const FAPConfig& NewConfig)
 
 EAPConfigCreateResult UArchipelagoSubsystem::CreateNewConfig(bool bOverrideExisting)
 {
-    const FString ConfigFilePath = GetConfigPath();
-    const FString ConfigDirectory = FPaths::GetPath(ConfigFilePath);
+    const EAPConfigCreateResult Result = FArchipelagoConfigUtils::CreateConfigFile(bOverrideExisting);
 
-    // Check whether the config already exists.
-    if (FPaths::FileExists(ConfigFilePath) && !bOverrideExisting)
+    if (Result == EAPConfigCreateResult::Success)
     {
-        return EAPConfigCreateResult::AlreadyExists;
+        Config = FAPConfig();
     }
 
-    // Ensure the Config directory exists.
-    if (!IFileManager::Get().DirectoryExists(*ConfigDirectory))
-    {
-        if (!IFileManager::Get().MakeDirectory(*ConfigDirectory, true))
-        {
-            return EAPConfigCreateResult::DirectoryCreationFailed;
-        }
-    }
-
-    // Generate default config JSON.
-    const FAPConfig DefaultConfig;
-
-    FString JsonString;
-    if (!FJsonObjectConverter::UStructToJsonObjectString(
-        FAPConfig::StaticStruct(),
-        &DefaultConfig,
-        JsonString,
-        0,
-        0))
-    {
-        return EAPConfigCreateResult::JsonConversionFailed;
-    }
-
-    // Write the config file.
-    if (!FFileHelper::SaveStringToFile(JsonString, *ConfigFilePath))
-    {
-        return EAPConfigCreateResult::FileWriteFailed;
-    }
-
-    // Update the in-memory config.
-    Config = DefaultConfig;
-
-    return EAPConfigCreateResult::Success;
+    return Result;
 }
 
 EAPConfigLoadResult UArchipelagoSubsystem::LoadConfig()

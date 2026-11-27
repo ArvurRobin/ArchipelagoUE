@@ -8,6 +8,7 @@
 #include "ArchipelagoLog.h"
 #include "WebSocket.h"
 #include "Dom/JsonObject.h"
+#include "ArchipelagoConfigUtils.h"
 #include "ArchipelagoSubsystem.generated.h"
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAPConnectionStarted);
