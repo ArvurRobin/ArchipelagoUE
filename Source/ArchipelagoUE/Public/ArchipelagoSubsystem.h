@@ -75,7 +75,7 @@ public:
         meta = (ToolTip = "Broadcast when the Archipelago server reports an invalid packet."))
     FOnAPInvalidPacketReceived OnInvalidPacketReceived;
 
-    UPROPERTY(BlueprintAssignable, Category = "Archipelago|Items",
+    UPROPERTY(BlueprintAssignable, Category = "Archipelago|Events",
         meta = (ToolTip = "Broadcast when an item is requested to be applied."))
     FOnAPApplyItem OnApplyItem;
 
@@ -201,7 +201,7 @@ private:
 
 public:
 
-    UFUNCTION(BlueprintPure, Category = "Archipelago|Room",
+    UFUNCTION(BlueprintPure, Category = "Archipelago|Info",
         meta = (ToolTip = "Returns the information received about the currently connected Archipelago room."))
     FAPRoomInfo GetRoomInfo() const;
 
@@ -214,7 +214,7 @@ public:
     FDateTime GetLastSaveTimestamp() const;
 
     UFUNCTION(BlueprintCallable, Category = "Archipelago")
-    void SetupArchipelago(
+    bool SetupArchipelago(
         UPARAM(DisplayName = "Game Name") const FString& InGameName,
         UPARAM(DisplayName = "Color Palette") const FAPMessageTypeColorPalette& InColorPalette
     );

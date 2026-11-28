@@ -472,11 +472,15 @@ FDateTime UArchipelagoSubsystem::GetLastSaveTimestamp() const
     return LastProgressSaveTime;
 }
 
-void UArchipelagoSubsystem::SetupArchipelago(const FString& InGameName, const FAPMessageTypeColorPalette& InColorPalette)
+bool UArchipelagoSubsystem::SetupArchipelago(const FString& InGameName, const FAPMessageTypeColorPalette& InColorPalette)
 {
+    if (InGameName.IsEmpty())
+        return false;
+
     UUID = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphens);
     this->GameName = InGameName;
     this->ColorPalette = InColorPalette;
+    return true;
 }
 
 FLinearColor UArchipelagoSubsystem::GetPrintJSONColor(const FString& Type) const

@@ -15,7 +15,8 @@ UENUM(BlueprintType, meta = (
     FileNotFound            UMETA(DisplayName = "File Not Found", ToolTip = "The configuration file could not be found."),
     FileReadFailed          UMETA(DisplayName = "File Read Failed", ToolTip = "The configuration file could not be read."),
     JsonParsingFailed       UMETA(DisplayName = "JSON Parsing Failed", ToolTip = "The configuration file could not be parsed as valid JSON."),
-    JsonConversionFailed    UMETA(DisplayName = "JSON Conversion Failed", ToolTip = "The parsed JSON data could not be converted into the configuration structure.")
+    JsonConversionFailed    UMETA(DisplayName = "JSON Conversion Failed", ToolTip = "The parsed JSON data could not be converted into the configuration structure."),
+    SubsystemNotAccessible  UMETA(DisplayName = "Subsystem Not Accessible", ToolTip = "The Archipelago Subsystem could not be accessed.")
 };
 
 UENUM(BlueprintType, meta = (
@@ -29,7 +30,8 @@ UENUM(BlueprintType, meta = (
     AlreadyExists           UMETA(DisplayName = "Already Exists", ToolTip = "A configuration file already exists at the target path."),
     DirectoryCreationFailed UMETA(DisplayName = "Directory Creation Failed", ToolTip = "The directory for the configuration file could not be created."),
     JsonConversionFailed    UMETA(DisplayName = "JSON Conversion Failed", ToolTip = "The configuration data could not be converted into JSON."),
-    FileWriteFailed         UMETA(DisplayName = "File Write Failed", ToolTip = "The configuration file could not be written to disk.")
+    FileWriteFailed         UMETA(DisplayName = "File Write Failed", ToolTip = "The configuration file could not be written to disk."),
+    SubsystemNotAccessible  UMETA(DisplayName = "Subsystem Not Accessible", ToolTip = "The Archipelago Subsystem could not be accessed.")
 };
 
 UENUM(BlueprintType, meta = (
@@ -42,7 +44,8 @@ UENUM(BlueprintType, meta = (
     Success                 UMETA(DisplayName = "Success", ToolTip = "The configuration file was saved successfully."),
     DirectoryCreationFailed UMETA(DisplayName = "Directory Creation Failed", ToolTip = "The directory for the configuration file could not be created."),
     JsonConversionFailed    UMETA(DisplayName = "JSON Conversion Failed", ToolTip = "The configuration data could not be converted into JSON."),
-    FileWriteFailed         UMETA(DisplayName = "File Write Failed", ToolTip = "The configuration file could not be written to disk.")
+    FileWriteFailed         UMETA(DisplayName = "File Write Failed", ToolTip = "The configuration file could not be written to disk."),
+    SubsystemNotAccessible  UMETA(DisplayName = "Subsystem Not Accessible", ToolTip = "The Archipelago Subsystem could not be accessed.")
 };
 
 #pragma endregion
